@@ -15,7 +15,7 @@ class NautobotSparePartsConfig(NautobotAppConfig):
     base_url = "spare-parts"
     required_settings = []
     min_version = "2.0.0"
-    max_version = "2.9999"
+    max_version = "3.9999"
     default_settings = {}
 
     def ready(self):
