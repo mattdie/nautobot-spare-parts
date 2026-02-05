@@ -6,6 +6,7 @@ from django.db.models import F
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.generic import View
+from django_tables2 import RequestConfig
 
 from nautobot.apps.views import (
     NautobotUIViewSet,
@@ -234,6 +235,7 @@ class LowStockDashboardView(PermissionRequiredMixin, View):
         )
 
         table = tables.LowStockTable(queryset)
+        RequestConfig(request).configure(table)
 
         return render(
             request,
