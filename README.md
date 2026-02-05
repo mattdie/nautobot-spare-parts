@@ -20,10 +20,9 @@ A Nautobot plugin for tracking spare parts inventory across datacenter locations
 ### Version Compatibility
 
 This plugin is compatible with:
-- ✅ Nautobot 2.1.x (tested with 2.1.7)
-- ✅ Nautobot 2.2.x
-- ✅ Nautobot 2.3.x (tested with 2.3.16)
-- ✅ Nautobot 3.0.x (forward compatible)
+- Nautobot 2.1.x (tested with 2.1.7)
+- Nautobot 2.3.x (tested with 2.3.16)
+- Nautobot 3.0.x (forward compatible)
 
 See [COMPATIBILITY.md](COMPATIBILITY.md) for detailed version information.
 
