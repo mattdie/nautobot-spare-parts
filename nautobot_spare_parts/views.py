@@ -6,7 +6,6 @@ from django.db.models import F
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.generic import View
-from django_tables2 import RequestConfig
 
 from nautobot.apps.views import (
     NautobotUIViewSet,
@@ -234,14 +233,11 @@ class LowStockDashboardView(PermissionRequiredMixin, View):
             quantity_on_hand__lte=F("minimum_quantity") + F("quantity_reserved")
         )
 
-        table = tables.LowStockTable(queryset)
-        RequestConfig(request).configure(table)
-
         return render(
             request,
             self.template_name,
             {
-                "table": table,
+                "low_stock_items": queryset,
                 "low_stock_count": queryset.count(),
             },
         )
