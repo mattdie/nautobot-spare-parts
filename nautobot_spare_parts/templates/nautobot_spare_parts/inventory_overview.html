@@ -1,0 +1,140 @@
+{% extends 'base.html' %}
+{% load humanize %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-10 col-md-12">
+
+        <div class="row mb-10">
+            <div class="col-md-3">
+                <div class="card text-center">
+                    <div class="card-body">
+                        <div style="font-size:2rem;font-weight:600;font-family:monospace;">{{ total_skus }}</div>
+                        <div class="text-muted">Part Types</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card text-center">
+                    <div class="card-body">
+                        <div style="font-size:2rem;font-weight:600;font-family:monospace;">{{ total_units }}</div>
+                        <div class="text-muted">Total Units</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card text-center">
+                    <div class="card-body">
+                        <div style="font-size:2rem;font-weight:600;font-family:monospace;">${{ total_value|floatformat:0|intcomma }}</div>
+                        <div class="text-muted">Est. Value</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card text-center {% if low_stock_count > 0 %}border-warning{% endif %}">
+                    <div class="card-body">
+                        <div style="font-size:2rem;font-weight:600;font-family:monospace;{% if low_stock_count > 0 %}color:var(--bs-warning){% endif %}">{{ low_stock_count }}</div>
+                        <div class="text-muted">Low Stock</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="col-md-6">
+                <div class="card mb-10">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <strong>LOW STOCK</strong>
+                        <a href="{% url 'plugins:nautobot_spare_parts:low_stock_dashboard' %}" class="btn btn-sm btn-secondary">View All</a>
+                    </div>
+                    <div class="card-body p-0">
+                        {% if low_stock_items %}
+                        <table class="table table-sm mb-0">
+                            <thead>
+                                <tr>
+                                    <th>Part</th>
+                                    <th>Location</th>
+                                    <th>Available</th>
+                                    <th>Min</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for item in low_stock_items %}
+                                <tr>
+                                    <td><a href="{{ item.get_absolute_url }}">{{ item.spare_part_type }}</a></td>
+                                    <td>{{ item.location }}</td>
+                                    <td><strong>{{ item.quantity_available }}</strong></td>
+                                    <td class="text-muted">{{ item.minimum_quantity }}</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                        {% else %}
+                        <p class="text-muted p-10 mb-0">All items adequately stocked.</p>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-md-6">
+                <div class="card mb-10">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <strong>RECENT TRANSACTIONS</strong>
+                        <a href="{% url 'plugins:nautobot_spare_parts:spareparttransaction_list' %}" class="btn btn-sm btn-secondary">View All</a>
+                    </div>
+                    <div class="card-body p-0">
+                        <table class="table table-sm mb-0">
+                            <thead>
+                                <tr>
+                                    <th>Part</th>
+                                    <th>Type</th>
+                                    <th>Qty</th>
+                                    <th>When</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for t in recent_transactions %}
+                                <tr>
+                                    <td>
+                                        <a href="{{ t.spare_part_inventory.get_absolute_url }}">
+                                            {{ t.spare_part_inventory.spare_part_type.name }}
+                                        </a>
+                                    </td>
+                                    <td>
+                                        <span class="badge {% if t.transaction_type == 'check_out' or t.transaction_type == 'transfer' %}bg-warning text-dark{% elif t.transaction_type == 'check_in' %}bg-success{% else %}bg-secondary{% endif %}">
+                                            {{ t.get_transaction_type_display }}
+                                        </span>
+                                    </td>
+                                    <td style="font-family:monospace;">{{ t.quantity|stringformat:"+d" }}</td>
+                                    <td class="text-muted" style="font-size:.85em;">{{ t.timestamp|timesince }} ago</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="col-md-12">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <strong>QUICK LINKS</strong>
+                    </div>
+                    <div class="card-body">
+                        <a href="{% url 'plugins:nautobot_spare_parts:sparepartinventory_list' %}" class="btn btn-secondary me-4">Inventory</a>
+                        <a href="{% url 'plugins:nautobot_spare_parts:spareparttype_list' %}" class="btn btn-secondary me-4">Part Types</a>
+                        <a href="{% url 'plugins:nautobot_spare_parts:spareparttransaction_list' %}" class="btn btn-secondary me-4">Transactions</a>
+                        <a href="{% url 'plugins:nautobot_spare_parts:low_stock_dashboard' %}" class="btn btn-secondary me-4">Low Stock</a>
+                        <a href="{% url 'plugins:nautobot_spare_parts:inventory_csv_export' %}" class="btn btn-secondary">
+                            <span class="mdi mdi-download me-2"></span>Export CSV
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</div>
+{% endblock %}

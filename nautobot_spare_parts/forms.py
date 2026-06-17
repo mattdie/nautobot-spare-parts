@@ -189,15 +189,27 @@ class CheckOutForm(forms.Form):
         help_text="Reason for check-out (e.g., 'Replace failed component')",
     )
     related_device = forms.ModelChoiceField(
-        queryset=Device.objects.all(),
+        queryset=Device.objects.none(),
         required=False,
         help_text="Device this part is being used for (optional)",
+    )
+    jira_ticket = forms.CharField(
+        max_length=50,
+        required=False,
+        help_text="Jira ticket reference (e.g. INFRA2-1234)",
     )
     notes = forms.CharField(
         widget=forms.Textarea(attrs={"rows": 3}),
         required=False,
         help_text="Additional notes (optional)",
     )
+
+    def __init__(self, *args, location=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        if location is not None:
+            self.fields["related_device"].queryset = Device.objects.filter(location=location)
+        else:
+            self.fields["related_device"].queryset = Device.objects.all()
 
 
 class AdjustmentForm(forms.Form):
@@ -215,3 +227,75 @@ class AdjustmentForm(forms.Form):
         required=False,
         help_text="Additional notes (optional)",
     )
+
+
+class AllocationForm(forms.Form):
+    """Form for reserving (allocating) spare parts."""
+
+    quantity = forms.IntegerField(
+        min_value=1,
+        help_text="Number of units to reserve",
+    )
+    reason = forms.CharField(
+        widget=forms.Textarea(attrs={"rows": 3}),
+        help_text="Reason for allocation (e.g., 'Reserved for planned maintenance')",
+    )
+    notes = forms.CharField(
+        widget=forms.Textarea(attrs={"rows": 3}),
+        required=False,
+        help_text="Additional notes (optional)",
+    )
+
+
+class DeallocationForm(forms.Form):
+    """Form for releasing (deallocating) reserved spare parts."""
+
+    quantity = forms.IntegerField(
+        min_value=1,
+        help_text="Number of reserved units to release",
+    )
+    reason = forms.CharField(
+        widget=forms.Textarea(attrs={"rows": 3}),
+        help_text="Reason for deallocation (e.g., 'Maintenance cancelled')",
+    )
+    notes = forms.CharField(
+        widget=forms.Textarea(attrs={"rows": 3}),
+        required=False,
+        help_text="Additional notes (optional)",
+    )
+
+
+class TransferForm(forms.Form):
+    """Form for transferring stock between locations."""
+
+    quantity = forms.IntegerField(min_value=1, help_text="Number of units to transfer")
+    destination_location = forms.ModelChoiceField(
+        queryset=Location.objects.all(),
+        help_text="Destination location",
+    )
+    reason = forms.CharField(widget=forms.Textarea(attrs={"rows": 3}), help_text="Reason for transfer")
+    notes = forms.CharField(widget=forms.Textarea(attrs={"rows": 3}), required=False)
+
+
+class BulkReceiveLineForm(forms.Form):
+    """Single line in a bulk receive formset."""
+
+    inventory = forms.ModelChoiceField(
+        queryset=SparePartInventory.objects.select_related("spare_part_type", "location"),
+        label="Part / Location",
+        help_text="Select the inventory record to receive into",
+    )
+    quantity = forms.IntegerField(min_value=1, label="Qty received")
+    reason = forms.CharField(
+        initial="Bulk receive",
+        required=False,
+        help_text="Leave blank to use 'Bulk receive'",
+    )
+    notes = forms.CharField(widget=forms.Textarea(attrs={"rows": 2}), required=False)
+
+
+BulkReceiveFormSet = forms.formset_factory(
+    BulkReceiveLineForm,
+    extra=5,
+    can_delete=True,
+)

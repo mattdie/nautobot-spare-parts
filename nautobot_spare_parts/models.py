@@ -27,15 +27,22 @@ class SparePartType(PrimaryModel):
 
     CATEGORY_CHOICES = (
         ("ram", "RAM"),
+        ("dimm", "DIMM"),
         ("cable", "Cable"),
+        ("cable_fiber", "Cable (Fiber)"),
+        ("cable_copper", "Cable (Copper)"),
         ("transceiver", "Transceiver"),
         ("psu", "PSU"),
         ("hdd", "HDD"),
         ("ssd", "SSD"),
+        ("nvme", "NVMe"),
         ("nic", "NIC"),
         ("fan", "Fan"),
         ("motherboard", "Motherboard"),
         ("cpu", "CPU"),
+        ("gpu", "GPU"),
+        ("raid_card", "RAID Card"),
+        ("riser", "Riser"),
         ("other", "Other"),
     )
 
@@ -218,8 +225,7 @@ class SparePartInventory(PrimaryModel):
         self.quantity_reserved += quantity
         self.validated_save()
 
-        # Create transaction record
-        SparePartTransaction.objects.create(
+        transaction = SparePartTransaction.objects.create(
             spare_part_inventory=self,
             transaction_type="allocation",
             quantity=quantity,
@@ -229,7 +235,7 @@ class SparePartInventory(PrimaryModel):
             reason=reason,
         )
 
-        return self
+        return transaction
 
     def deallocate(self, quantity, reason, user=None):
         """Release reserved parts."""
@@ -244,8 +250,7 @@ class SparePartInventory(PrimaryModel):
         self.quantity_reserved -= quantity
         self.validated_save()
 
-        # Create transaction record
-        SparePartTransaction.objects.create(
+        transaction = SparePartTransaction.objects.create(
             spare_part_inventory=self,
             transaction_type="deallocation",
             quantity=-quantity,
@@ -255,9 +260,9 @@ class SparePartInventory(PrimaryModel):
             reason=reason,
         )
 
-        return self
+        return transaction
 
-    def adjust_stock(self, quantity, transaction_type, reason, user=None, related_device=None):
+    def adjust_stock(self, quantity, transaction_type, reason, user=None, related_device=None, jira_ticket=""):
         """Modify stock levels and create transaction record."""
         if transaction_type not in ["check_in", "check_out", "adjustment"]:
             raise ValidationError("Invalid transaction type for stock adjustment")
@@ -270,11 +275,16 @@ class SparePartInventory(PrimaryModel):
                 f"Cannot adjust stock by {quantity}. Would result in negative inventory."
             )
 
+        if new_quantity < self.quantity_reserved:
+            raise ValidationError(
+                f"Cannot adjust stock by {quantity}. Would result in only {new_quantity} on hand "
+                f"but {self.quantity_reserved} are reserved."
+            )
+
         self.quantity_on_hand = new_quantity
         self.validated_save()
 
-        # Create transaction record
-        SparePartTransaction.objects.create(
+        transaction = SparePartTransaction.objects.create(
             spare_part_inventory=self,
             transaction_type=transaction_type,
             quantity=quantity,
@@ -283,9 +293,10 @@ class SparePartInventory(PrimaryModel):
             user=user,
             reason=reason,
             related_device=related_device,
+            jira_ticket=jira_ticket or "",
         )
 
-        return self
+        return transaction
 
 
 class SparePartTransaction(BaseModel):
@@ -331,6 +342,12 @@ class SparePartTransaction(BaseModel):
         null=True,
         related_name="spare_part_transactions",
         help_text="Device associated with this transaction",
+    )
+    jira_ticket = models.CharField(
+        max_length=50,
+        blank=True,
+        default="",
+        help_text="Jira ticket reference (e.g. INFRA2-1234)",
     )
     notes = models.TextField(blank=True)
 

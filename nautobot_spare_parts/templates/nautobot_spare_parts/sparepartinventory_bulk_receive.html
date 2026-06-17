@@ -1,0 +1,117 @@
+{% extends 'base.html' %}
+{% load form_helpers %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-12">
+        <h1>Bulk Receive Shipment</h1>
+        <p class="text-muted">Add one row per part type received. Click <strong>+ Add Row</strong> for more lines.</p>
+
+        <form method="post" class="form">
+            {% csrf_token %}
+            {{ formset.management_form }}
+
+            <div class="panel panel-default">
+                <div class="panel-heading"><strong>Shipment Lines</strong></div>
+                <div class="panel-body">
+                    <table class="table table-condensed table-bordered" id="bulk-receive-table">
+                        <thead>
+                            <tr>
+                                <th style="width:35%">Part / Location</th>
+                                <th style="width:8%">Qty</th>
+                                <th style="width:22%">Reason</th>
+                                <th style="width:25%">Notes</th>
+                                <th style="width:10%">Remove</th>
+                            </tr>
+                        </thead>
+                        <tbody id="formset-body">
+                            {% for form in formset %}
+                            <tr class="formset-row">
+                                <td>{{ form.inventory }}</td>
+                                <td>{{ form.quantity }}</td>
+                                <td>{{ form.reason }}</td>
+                                <td>{{ form.notes }}</td>
+                                <td class="text-center">
+                                    <button type="button" class="btn btn-xs btn-danger remove-row">✕</button>
+                                    {{ form.DELETE }}
+                                </td>
+                            </tr>
+                            {% for error in form.non_field_errors %}
+                            <tr><td colspan="5"><span class="text-danger">{{ error }}</span></td></tr>
+                            {% endfor %}
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                    <button type="button" class="btn btn-sm btn-default" id="add-row">
+                        <i class="mdi mdi-plus"></i> Add Row
+                    </button>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <button type="submit" class="btn btn-primary">
+                    <i class="mdi mdi-package-down"></i> Receive Shipment
+                </button>
+                <a href="{% url 'plugins:nautobot_spare_parts:sparepartinventory_list' %}" class="btn btn-default">
+                    Cancel
+                </a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+(function() {
+    var tbody = document.getElementById('formset-body');
+    var totalForms = document.getElementById('id_form-TOTAL_FORMS');
+
+    // Hide the Django DELETE checkboxes — we handle removal with the ✕ button
+    document.querySelectorAll('[id$="-DELETE"]').forEach(function(cb) {
+        cb.style.display = 'none';
+    });
+
+    // ✕ button removes row visually and checks the hidden DELETE box
+    document.addEventListener('click', function(e) {
+        if (e.target.classList.contains('remove-row')) {
+            var row = e.target.closest('tr');
+            var deleteBox = row.querySelector('[id$="-DELETE"]');
+            if (deleteBox) deleteBox.checked = true;
+            row.style.display = 'none';
+        }
+    });
+
+    // Clone the first row as the template for new rows
+    document.getElementById('add-row').addEventListener('click', function() {
+        var rows = tbody.querySelectorAll('tr.formset-row');
+        var template = rows[0].cloneNode(true);
+        var idx = parseInt(totalForms.value);
+
+        // Update all field name/id attributes to use new index
+        template.querySelectorAll('input, select, textarea').forEach(function(el) {
+            ['name', 'id'].forEach(function(attr) {
+                if (el.getAttribute(attr)) {
+                    el.setAttribute(attr, el.getAttribute(attr).replace(/form-\d+-/, 'form-' + idx + '-'));
+                }
+            });
+            if (el.type !== 'checkbox') el.value = el.tagName === 'SELECT' ? '' : '';
+            if (el.type === 'checkbox') el.checked = false;
+        });
+
+        // Reset labels
+        template.querySelectorAll('label').forEach(function(el) {
+            if (el.getAttribute('for')) {
+                el.setAttribute('for', el.getAttribute('for').replace(/form-\d+-/, 'form-' + idx + '-'));
+            }
+        });
+
+        // Set default reason text
+        var reasonField = template.querySelector('[id$="-reason"]');
+        if (reasonField) reasonField.value = 'Bulk receive';
+
+        template.style.display = '';
+        tbody.appendChild(template);
+        totalForms.value = idx + 1;
+    });
+})();
+</script>
+{% endblock %}

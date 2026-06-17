@@ -40,6 +40,11 @@ menu_items = (
                         permissions=["nautobot_spare_parts.view_spareparttransaction"],
                     ),
                     NavMenuItem(
+                        link="plugins:nautobot_spare_parts:sparepartinventory_bulk_receive",
+                        name="Bulk Receive",
+                        permissions=["nautobot_spare_parts.change_sparepartinventory"],
+                    ),
+                    NavMenuItem(
                         link="plugins:nautobot_spare_parts:low_stock_dashboard",
                         name="Low Stock Alert",
                         permissions=["nautobot_spare_parts.view_sparepartinventory"],

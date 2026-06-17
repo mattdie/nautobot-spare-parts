@@ -2,6 +2,7 @@
 
 from django.contrib import messages
 from django.contrib.auth.mixins import PermissionRequiredMixin
+from django.db import transaction as db_transaction
 from django.db.models import F
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -122,15 +123,13 @@ class CheckInView(PermissionRequiredMixin, View):
             notes = form.cleaned_data.get("notes", "")
 
             try:
-                inventory.adjust_stock(
+                transaction = inventory.adjust_stock(
                     quantity=quantity,
                     transaction_type="check_in",
                     reason=reason,
                     user=request.user,
                 )
                 if notes:
-                    # Add notes to the most recent transaction
-                    transaction = inventory.transactions.first()
                     transaction.notes = notes
                     transaction.save()
 
@@ -161,7 +160,7 @@ class CheckOutView(PermissionRequiredMixin, View):
     def get(self, request, pk):
         """Display check-out form."""
         inventory = get_object_or_404(SparePartInventory, pk=pk)
-        form = forms.CheckOutForm()
+        form = forms.CheckOutForm(location=inventory.location)
         return render(
             request,
             "nautobot_spare_parts/sparepartinventory_checkout.html",
@@ -175,25 +174,25 @@ class CheckOutView(PermissionRequiredMixin, View):
     def post(self, request, pk):
         """Process check-out form."""
         inventory = get_object_or_404(SparePartInventory, pk=pk)
-        form = forms.CheckOutForm(request.POST)
+        form = forms.CheckOutForm(request.POST, location=inventory.location)
 
         if form.is_valid():
             quantity = form.cleaned_data["quantity"]
             reason = form.cleaned_data["reason"]
             related_device = form.cleaned_data.get("related_device")
+            jira_ticket = form.cleaned_data.get("jira_ticket", "")
             notes = form.cleaned_data.get("notes", "")
 
             try:
-                inventory.adjust_stock(
+                transaction = inventory.adjust_stock(
                     quantity=-quantity,
                     transaction_type="check_out",
                     reason=reason,
                     user=request.user,
                     related_device=related_device,
+                    jira_ticket=jira_ticket,
                 )
                 if notes:
-                    # Add notes to the most recent transaction
-                    transaction = inventory.transactions.first()
                     transaction.notes = notes
                     transaction.save()
 
@@ -224,7 +223,6 @@ class LowStockDashboardView(PermissionRequiredMixin, View):
 
     def get(self, request):
         """Display low stock dashboard."""
-        # Filter where quantity_available <= minimum_quantity
         queryset = SparePartInventory.objects.select_related(
             "spare_part_type",
             "spare_part_type__manufacturer",
@@ -233,11 +231,286 @@ class LowStockDashboardView(PermissionRequiredMixin, View):
             quantity_on_hand__lte=F("minimum_quantity") + F("quantity_reserved")
         )
 
+        table = tables.LowStockTable(queryset)
+        table.configure(request)
+
         return render(
             request,
             self.template_name,
             {
-                "low_stock_items": queryset,
+                "table": table,
                 "low_stock_count": queryset.count(),
             },
         )
+
+
+class AllocationView(PermissionRequiredMixin, View):
+    """View for allocating (reserving) spare parts."""
+
+    permission_required = "nautobot_spare_parts.change_sparepartinventory"
+
+    def get(self, request, pk):
+        """Display allocation form."""
+        inventory = get_object_or_404(SparePartInventory, pk=pk)
+        form = forms.AllocationForm()
+        return render(
+            request,
+            "nautobot_spare_parts/sparepartinventory_allocate.html",
+            {
+                "inventory": inventory,
+                "form": form,
+                "action": "Allocate",
+            },
+        )
+
+    def post(self, request, pk):
+        """Process allocation form."""
+        inventory = get_object_or_404(SparePartInventory, pk=pk)
+        form = forms.AllocationForm(request.POST)
+
+        if form.is_valid():
+            quantity = form.cleaned_data["quantity"]
+            reason = form.cleaned_data["reason"]
+            notes = form.cleaned_data.get("notes", "")
+
+            try:
+                transaction = inventory.allocate(quantity=quantity, reason=reason, user=request.user)
+                if notes:
+                    transaction.notes = notes
+                    transaction.save()
+
+                messages.success(
+                    request,
+                    f"Allocated {quantity} units of {inventory.spare_part_type}",
+                )
+                return redirect(inventory.get_absolute_url())
+            except Exception as e:
+                messages.error(request, f"Allocation failed: {e}")
+
+        return render(
+            request,
+            "nautobot_spare_parts/sparepartinventory_allocate.html",
+            {
+                "inventory": inventory,
+                "form": form,
+                "action": "Allocate",
+            },
+        )
+
+
+class DeallocationView(PermissionRequiredMixin, View):
+    """View for deallocating (releasing) reserved spare parts."""
+
+    permission_required = "nautobot_spare_parts.change_sparepartinventory"
+
+    def get(self, request, pk):
+        """Display deallocation form."""
+        inventory = get_object_or_404(SparePartInventory, pk=pk)
+        form = forms.DeallocationForm()
+        return render(
+            request,
+            "nautobot_spare_parts/sparepartinventory_deallocate.html",
+            {
+                "inventory": inventory,
+                "form": form,
+                "action": "Deallocate",
+            },
+        )
+
+    def post(self, request, pk):
+        """Process deallocation form."""
+        inventory = get_object_or_404(SparePartInventory, pk=pk)
+        form = forms.DeallocationForm(request.POST)
+
+        if form.is_valid():
+            quantity = form.cleaned_data["quantity"]
+            reason = form.cleaned_data["reason"]
+            notes = form.cleaned_data.get("notes", "")
+
+            try:
+                transaction = inventory.deallocate(quantity=quantity, reason=reason, user=request.user)
+                if notes:
+                    transaction.notes = notes
+                    transaction.save()
+
+                messages.success(
+                    request,
+                    f"Deallocated {quantity} units of {inventory.spare_part_type}",
+                )
+                return redirect(inventory.get_absolute_url())
+            except Exception as e:
+                messages.error(request, f"Deallocation failed: {e}")
+
+        return render(
+            request,
+            "nautobot_spare_parts/sparepartinventory_deallocate.html",
+            {
+                "inventory": inventory,
+                "form": form,
+                "action": "Deallocate",
+            },
+        )
+
+
+class AdjustmentView(PermissionRequiredMixin, View):
+    """Correct stock levels with an explanation."""
+
+    permission_required = "nautobot_spare_parts.change_sparepartinventory"
+
+    def get(self, request, pk):
+        inventory = get_object_or_404(SparePartInventory, pk=pk)
+        form = forms.AdjustmentForm()
+        return render(request, "nautobot_spare_parts/sparepartinventory_adjustment.html", {
+            "inventory": inventory,
+            "form": form,
+        })
+
+    def post(self, request, pk):
+        inventory = get_object_or_404(SparePartInventory, pk=pk)
+        form = forms.AdjustmentForm(request.POST)
+
+        if form.is_valid():
+            quantity = form.cleaned_data["quantity"]
+            reason = form.cleaned_data["reason"]
+            notes = form.cleaned_data.get("notes", "")
+
+            try:
+                transaction = inventory.adjust_stock(
+                    quantity=quantity,
+                    transaction_type="adjustment",
+                    reason=reason,
+                    user=request.user,
+                )
+                if notes:
+                    transaction.notes = notes
+                    transaction.save()
+
+                messages.success(request, f"Adjusted {inventory.spare_part_type} by {quantity:+d} units.")
+                return redirect(inventory.get_absolute_url())
+            except Exception as e:
+                messages.error(request, f"Adjustment failed: {e}")
+
+        return render(request, "nautobot_spare_parts/sparepartinventory_adjustment.html", {
+            "inventory": inventory,
+            "form": form,
+        })
+
+
+class TransferView(PermissionRequiredMixin, View):
+    """Transfer stock from one location to another."""
+
+    permission_required = "nautobot_spare_parts.change_sparepartinventory"
+
+    def get(self, request, pk):
+        inventory = get_object_or_404(SparePartInventory, pk=pk)
+        form = forms.TransferForm()
+        form.fields["destination_location"].queryset = form.fields["destination_location"].queryset.exclude(
+            pk=inventory.location.pk
+        )
+        return render(request, "nautobot_spare_parts/sparepartinventory_transfer.html", {
+            "inventory": inventory,
+            "form": form,
+        })
+
+    def post(self, request, pk):
+        inventory = get_object_or_404(SparePartInventory, pk=pk)
+        form = forms.TransferForm(request.POST)
+        form.fields["destination_location"].queryset = form.fields["destination_location"].queryset.exclude(
+            pk=inventory.location.pk
+        )
+
+        if form.is_valid():
+            quantity = form.cleaned_data["quantity"]
+            destination = form.cleaned_data["destination_location"]
+            reason = form.cleaned_data["reason"]
+            notes = form.cleaned_data.get("notes", "")
+
+            try:
+                with db_transaction.atomic():
+                    src_transaction = inventory.adjust_stock(
+                        quantity=-quantity,
+                        transaction_type="transfer",
+                        reason=f"Transfer to {destination}: {reason}",
+                        user=request.user,
+                    )
+                    if notes:
+                        src_transaction.notes = notes
+                        src_transaction.save()
+
+                    dest_inventory, _ = SparePartInventory.objects.get_or_create(
+                        spare_part_type=inventory.spare_part_type,
+                        location=destination,
+                        defaults={"minimum_quantity": 0, "reorder_quantity": 0, "storage_location_detail": ""},
+                    )
+                    dest_transaction = dest_inventory.adjust_stock(
+                        quantity=quantity,
+                        transaction_type="transfer",
+                        reason=f"Transfer from {inventory.location}: {reason}",
+                        user=request.user,
+                    )
+                    if notes:
+                        dest_transaction.notes = notes
+                        dest_transaction.save()
+
+                messages.success(request, f"Transferred {quantity}× {inventory.spare_part_type} to {destination}.")
+                return redirect(inventory.get_absolute_url())
+            except Exception as e:
+                messages.error(request, f"Transfer failed: {e}")
+
+        return render(request, "nautobot_spare_parts/sparepartinventory_transfer.html", {
+            "inventory": inventory,
+            "form": form,
+        })
+
+
+class BulkReceiveView(PermissionRequiredMixin, View):
+    """Check in multiple part types at once from a single shipment."""
+
+    permission_required = "nautobot_spare_parts.change_sparepartinventory"
+
+    def get(self, request):
+        formset = forms.BulkReceiveFormSet()
+        return render(request, "nautobot_spare_parts/sparepartinventory_bulk_receive.html", {
+            "formset": formset,
+        })
+
+    def post(self, request):
+        formset = forms.BulkReceiveFormSet(request.POST)
+
+        if formset.is_valid():
+            received = []
+            errors = []
+
+            with db_transaction.atomic():
+                for form in formset:
+                    if not form.cleaned_data or form.cleaned_data.get("DELETE"):
+                        continue
+                    inventory = form.cleaned_data["inventory"]
+                    quantity = form.cleaned_data["quantity"]
+                    notes = form.cleaned_data.get("notes", "")
+                    reason = form.cleaned_data.get("reason", "Bulk receive")
+
+                    try:
+                        transaction = inventory.adjust_stock(
+                            quantity=quantity,
+                            transaction_type="check_in",
+                            reason=reason,
+                            user=request.user,
+                        )
+                        if notes:
+                            transaction.notes = notes
+                            transaction.save()
+                        received.append(f"{quantity}× {inventory.spare_part_type} at {inventory.location}")
+                    except Exception as e:
+                        errors.append(str(e))
+
+            if errors:
+                for err in errors:
+                    messages.error(request, err)
+            else:
+                messages.success(request, f"Received {len(received)} line(s): " + ", ".join(received))
+                return redirect(reverse("plugins:nautobot_spare_parts:sparepartinventory_list"))
+
+        return render(request, "nautobot_spare_parts/sparepartinventory_bulk_receive.html", {
+            "formset": formset,
+        })
