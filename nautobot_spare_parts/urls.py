@@ -1,4 +1,4 @@
-"""URL patterns for Spare Parts Inventory plugin."""
+"""URL patterns for the Spare Parts Inventory app."""
 
 from django.urls import path
 
@@ -13,8 +13,23 @@ router.register("spare-part-types", views.SparePartTypeUIViewSet)
 router.register("spare-part-inventory", views.SparePartInventoryUIViewSet)
 router.register("spare-part-transactions", views.SparePartTransactionUIViewSet)
 
+# Fixed paths first so none of them can be swallowed by a router pattern.
 urlpatterns = [
-    # Custom action URLs
+    path("", views.InventoryOverviewView.as_view(), name="overview"),
+    path("low-stock/", views.LowStockDashboardView.as_view(), name="low_stock_dashboard"),
+    path("export/inventory.csv", views.InventoryCSVExportView.as_view(), name="inventory_csv_export"),
+    path("jira/<str:ticket>/", views.JiraTicketPartsView.as_view(), name="jira_ticket_parts"),
+    path("labels/", views.BinLabelsView.as_view(), name="bin_labels"),
+    path(
+        "device/<uuid:device_pk>/take-part/",
+        views.DeviceCheckOutView.as_view(),
+        name="device_checkout",
+    ),
+    path(
+        "spare-part-inventory/bulk-receive/",
+        views.BulkReceiveView.as_view(),
+        name="sparepartinventory_bulk_receive",
+    ),
     path(
         "spare-part-inventory/<uuid:pk>/check-in/",
         views.CheckInView.as_view(),
@@ -44,16 +59,6 @@ urlpatterns = [
         "spare-part-inventory/<uuid:pk>/transfer/",
         views.TransferView.as_view(),
         name="sparepartinventory_transfer",
-    ),
-    path(
-        "spare-part-inventory/bulk-receive/",
-        views.BulkReceiveView.as_view(),
-        name="sparepartinventory_bulk_receive",
-    ),
-    path(
-        "low-stock/",
-        views.LowStockDashboardView.as_view(),
-        name="low_stock_dashboard",
     ),
 ]
 

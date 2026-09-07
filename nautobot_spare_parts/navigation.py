@@ -1,7 +1,9 @@
-"""Navigation menu items for Spare Parts Inventory plugin."""
+"""Navigation menu for the Spare Parts Inventory app."""
 
 from nautobot.apps.ui import NavMenuAddButton, NavMenuGroup, NavMenuItem, NavMenuTab
 
+VIEW_INVENTORY = "nautobot_spare_parts.view_sparepartinventory"
+CHANGE_INVENTORY = "nautobot_spare_parts.change_sparepartinventory"
 
 menu_items = (
     NavMenuTab(
@@ -9,12 +11,28 @@ menu_items = (
         weight=600,
         groups=(
             NavMenuGroup(
-                name="Spare Parts Inventory",
+                name="Inventory",
                 weight=100,
                 items=(
                     NavMenuItem(
+                        link="plugins:nautobot_spare_parts:overview",
+                        name="Overview",
+                        permissions=[VIEW_INVENTORY],
+                    ),
+                    NavMenuItem(
+                        link="plugins:nautobot_spare_parts:sparepartinventory_list",
+                        name="Stock",
+                        permissions=[VIEW_INVENTORY],
+                        buttons=(
+                            NavMenuAddButton(
+                                link="plugins:nautobot_spare_parts:sparepartinventory_add",
+                                permissions=["nautobot_spare_parts.add_sparepartinventory"],
+                            ),
+                        ),
+                    ),
+                    NavMenuItem(
                         link="plugins:nautobot_spare_parts:spareparttype_list",
-                        name="Spare Part Types",
+                        name="Part Types",
                         permissions=["nautobot_spare_parts.view_spareparttype"],
                         buttons=(
                             NavMenuAddButton(
@@ -24,30 +42,30 @@ menu_items = (
                         ),
                     ),
                     NavMenuItem(
-                        link="plugins:nautobot_spare_parts:sparepartinventory_list",
-                        name="Inventory",
-                        permissions=["nautobot_spare_parts.view_sparepartinventory"],
-                        buttons=(
-                            NavMenuAddButton(
-                                link="plugins:nautobot_spare_parts:sparepartinventory_add",
-                                permissions=["nautobot_spare_parts.add_sparepartinventory"],
-                            ),
-                        ),
+                        link="plugins:nautobot_spare_parts:low_stock_dashboard",
+                        name="Low Stock",
+                        permissions=[VIEW_INVENTORY],
                     ),
-                    NavMenuItem(
-                        link="plugins:nautobot_spare_parts:spareparttransaction_list",
-                        name="Transactions",
-                        permissions=["nautobot_spare_parts.view_spareparttransaction"],
-                    ),
+                ),
+            ),
+            NavMenuGroup(
+                name="Movements",
+                weight=200,
+                items=(
                     NavMenuItem(
                         link="plugins:nautobot_spare_parts:sparepartinventory_bulk_receive",
                         name="Bulk Receive",
-                        permissions=["nautobot_spare_parts.change_sparepartinventory"],
+                        permissions=[CHANGE_INVENTORY],
                     ),
                     NavMenuItem(
-                        link="plugins:nautobot_spare_parts:low_stock_dashboard",
-                        name="Low Stock Alert",
-                        permissions=["nautobot_spare_parts.view_sparepartinventory"],
+                        link="plugins:nautobot_spare_parts:spareparttransaction_list",
+                        name="Transaction Log",
+                        permissions=["nautobot_spare_parts.view_spareparttransaction"],
+                    ),
+                    NavMenuItem(
+                        link="plugins:nautobot_spare_parts:bin_labels",
+                        name="Print Bin Labels",
+                        permissions=[VIEW_INVENTORY],
                     ),
                 ),
             ),

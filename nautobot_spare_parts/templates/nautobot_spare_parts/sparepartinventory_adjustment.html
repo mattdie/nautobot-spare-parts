@@ -1,66 +1,13 @@
-{% extends 'base.html' %}
-{% load form_helpers %}
+{% extends 'nautobot_spare_parts/inc/movement_base.html' %}
 
-{% block content %}
-<form method="post" class="h-100 vstack">
-    {% csrf_token %}
-
-    <div class="row justify-content-center align-content-start flex-fill">
-        <div class="col-lg-8 col-md-10">
-
-            <div class="card mb-10">
-                <div class="card-header"><strong>ITEM</strong></div>
-                <div class="card-body">
-                    <div class="mb-10 d-md-flex justify-content-center">
-                        <label class="col-md-3 col-form-label">Part</label>
-                        <div class="col-md-9">
-                            <p class="form-control-plaintext">
-                                <a href="{{ inventory.spare_part_type.get_absolute_url }}">{{ inventory.spare_part_type }}</a>
-                            </p>
-                        </div>
-                    </div>
-                    <div class="mb-10 d-md-flex justify-content-center">
-                        <label class="col-md-3 col-form-label">Location</label>
-                        <div class="col-md-9">
-                            <p class="form-control-plaintext">{{ inventory.location }}</p>
-                        </div>
-                    </div>
-                    <div class="mb-10 d-md-flex justify-content-center">
-                        <label class="col-md-3 col-form-label">Current On Hand</label>
-                        <div class="col-md-9">
-                            <p class="form-control-plaintext"><strong>{{ inventory.quantity_on_hand }}</strong></p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="card mb-10">
-                <div class="card-header"><strong>ADJUSTMENT</strong></div>
-                <div class="card-body">
-                    {% render_field form.quantity %}
-                    {% render_field form.reason %}
-                </div>
-            </div>
-
-            <div class="card mb-10">
-                <div class="card-header"><strong>TRACKING</strong></div>
-                <div class="card-body">
-                    {% render_field form.jira_ticket %}
-                    {% render_field form.notes %}
-                </div>
-            </div>
-
-        </div>
-    </div>
-
-    <div class="nb-form-sticky-footer">
-        <button type="submit" class="btn btn-primary">
-            <span class="mdi mdi-check me-4"></span>Apply Adjustment
-        </button>
-        <a href="{{ inventory.get_absolute_url }}" class="btn btn-secondary">
-            <span class="mdi mdi-close me-4"></span>Cancel
-        </a>
-    </div>
-
-</form>
-{% endblock %}
+{% block action_intro %}
+<p class="text-body-secondary">
+    Correct the recorded count to match what is physically on the shelf. This is for stock
+    takes, breakage and losses — not for parts you are taking out to use, which belong in
+    Check Out so they end up linked to a device and a ticket.
+</p>
+<p class="text-body-secondary">
+    Enter the <em>difference</em>, not the new total: if the shelf holds 8 and Nautobot says 10,
+    enter <span class="font-monospace">-2</span>.
+</p>
+{% endblock action_intro %}

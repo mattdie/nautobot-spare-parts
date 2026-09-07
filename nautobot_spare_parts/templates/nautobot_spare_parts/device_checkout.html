@@ -1,0 +1,100 @@
+{% extends 'base.html' %}
+{% load form_helpers %}
+{% load helpers %}
+
+{% block title %}Take a part for {{ device.name }}{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-lg-7">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <strong>Take a part for {{ device.name }}</strong>
+                <span class="text-body-secondary">{{ device.device_type }}</span>
+            </div>
+            <div class="card-body">
+                <p class="text-body-secondary">
+                    Only parts that fit
+                    <a href="{{ device.device_type.get_absolute_url }}">{{ device.device_type }}</a>
+                    — or that carry no compatibility restriction — are listed, and stock is limited to
+                    <strong>{{ device.location }}</strong>'s own datacenter. If a part is only stocked
+                    elsewhere, you will be told where, so it can be transferred over first.
+                </p>
+
+                <form method="post" class="form">
+                    {% csrf_token %}
+                    {% render_form form %}
+                    <div class="d-flex gap-8 mt-16">
+                        <button type="submit" class="btn btn-primary" data-submit-once>Take the part</button>
+                        <a href="{{ return_url }}" class="btn btn-outline-secondary">Cancel</a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-5">
+        <div class="card">
+            <div class="card-header"><strong>Device</strong></div>
+            <table class="table table-sm mb-0">
+                <tr>
+                    <th>Name</th>
+                    <td><a href="{{ device.get_absolute_url }}">{{ device.name }}</a></td>
+                </tr>
+                <tr>
+                    <th>Type</th>
+                    <td>{{ device.device_type }}</td>
+                </tr>
+                <tr>
+                    <th>Location</th>
+                    <td>{{ device.location }}</td>
+                </tr>
+                {% if device.rack %}
+                <tr>
+                    <th>Rack</th>
+                    <td>{{ device.rack }}</td>
+                </tr>
+                {% endif %}
+                <tr>
+                    <th>Status</th>
+                    <td>{{ device.status }}</td>
+                </tr>
+            </table>
+        </div>
+
+        <div class="card mt-16">
+            <div class="card-header"><strong>Already replaced in this box</strong></div>
+            {% if previous_parts %}
+            <table class="table table-sm mb-0">
+                {% for txn in previous_parts %}
+                <tr>
+                    <td class="text-nowrap">{{ txn.timestamp|date:"Y-m-d" }}</td>
+                    <td>{{ txn.spare_part_inventory.spare_part_type }}</td>
+                    <td class="text-end font-monospace">{{ txn.quantity }}</td>
+                    <td class="font-monospace">{{ txn.jira_ticket|placeholder }}</td>
+                </tr>
+                {% endfor %}
+            </table>
+            {% else %}
+            <div class="card-body text-body-secondary">
+                Nothing recorded yet. If this is the third drive this month, that will show up here.
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock content %}
+
+{% block javascript %}
+{{ block.super }}
+<script>
+    document.querySelectorAll('form').forEach(function (form) {
+        form.addEventListener('submit', function () {
+            form.querySelectorAll('[data-submit-once]').forEach(function (button) {
+                button.disabled = true;
+                button.textContent = 'Working…';
+            });
+        });
+    });
+</script>
+{% endblock javascript %}

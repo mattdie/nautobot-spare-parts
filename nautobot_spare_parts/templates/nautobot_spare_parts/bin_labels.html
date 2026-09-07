@@ -1,0 +1,131 @@
+{% extends 'base.html' %}
+{% load helpers %}
+{% load form_helpers %}
+
+{% block title %}Bin Labels{% endblock %}
+
+{% block content %}
+<div class="d-print-none">
+    <div class="d-flex justify-content-between align-items-start mb-16">
+        <div>
+            <h1 class="mb-0">Bin Labels</h1>
+            <p class="text-body-secondary mb-0">
+                Scanning a label opens the check-out form for that exact part and location,
+                so nobody has to find the record first.
+            </p>
+        </div>
+        {% if labels %}
+        <div class="d-flex gap-8">
+            <button type="button" class="btn btn-primary" onclick="window.print()">Print {{ count }}</button>
+            <a href="{% url 'plugins:nautobot_spare_parts:bin_labels' %}" class="btn btn-outline-secondary">Start again</a>
+        </div>
+        {% endif %}
+    </div>
+
+    {% if not qr_available %}
+    <div class="alert alert-warning">
+        The <code>segno</code> package is not installed, so the labels print without QR codes.
+        Install it (<code>pip install segno</code>) and reload.
+    </div>
+    {% endif %}
+
+    <div class="card mb-16">
+        <div class="card-header"><strong>What to print</strong></div>
+        <div class="card-body">
+            <form method="get" class="form">
+                {% render_form form %}
+                <div class="d-flex gap-8 mt-16">
+                    <button type="submit" class="btn btn-primary">Generate labels</button>
+                    <a href="{% url 'plugins:nautobot_spare_parts:sparepartinventory_list' %}" class="btn btn-outline-secondary">Back to stock</a>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    {% if picked %}
+        {% if labels %}
+        <p class="text-body-secondary">
+            {{ records }} bin{{ records|pluralize }}{% if copies > 1 %} × {{ copies }} copies{% endif %}
+            = <strong>{{ count }}</strong> label{{ count|pluralize }}.
+            {% if truncated %}Capped at {{ max_labels }} bins per sheet — narrow it down.{% endif %}
+        </p>
+        {% else %}
+        <div class="alert alert-warning">Nothing matched. Widen the selection above.</div>
+        {% endif %}
+    {% else %}
+    <div class="alert alert-info">
+        Pick some bins above. Leave everything empty and choose a location to label a whole cage.
+    </div>
+    {% endif %}
+</div>
+
+{% if labels %}
+<div class="label-sheet">
+    {% for label in labels %}
+    <div class="bin-label">
+        <div class="bin-label-qr">
+            {% if label.qr %}{{ label.qr }}{% else %}<span class="bin-label-noqr">no QR</span>{% endif %}
+        </div>
+        <div class="bin-label-text">
+            <div class="bin-label-part">{{ label.record.spare_part_type.name }}</div>
+            <div class="bin-label-meta">
+                {% if label.record.spare_part_type.manufacturer %}{{ label.record.spare_part_type.manufacturer }}{% endif %}
+                {% if label.record.spare_part_type.part_number %}
+                    <span class="bin-label-pn">{{ label.record.spare_part_type.part_number }}</span>
+                {% endif %}
+            </div>
+            <div class="bin-label-where">{{ label.record.location }}</div>
+            {% if label.record.storage_location_detail %}
+            <div class="bin-label-detail">{{ label.record.storage_location_detail }}</div>
+            {% endif %}
+            {% if label.record.minimum_quantity %}
+            <div class="bin-label-min">reorder at {{ label.record.minimum_quantity }}</div>
+            {% endif %}
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+{% endblock content %}
+
+{% block extra_styles %}
+{{ block.super }}
+<style>
+    /* Labels are printed and stuck on shelves, so they are deliberately plain:
+       black on white, real millimetre sizing, no theme colours. */
+    .label-sheet {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(70mm, 1fr));
+        gap: 4mm;
+    }
+    .bin-label {
+        display: flex;
+        gap: 3mm;
+        align-items: center;
+        border: 1px solid #999;
+        border-radius: 2px;
+        padding: 3mm;
+        background: #fff;
+        color: #000;
+        min-height: 26mm;
+        break-inside: avoid;
+    }
+    .bin-label-qr { flex: 0 0 auto; line-height: 0; background: #fff; padding: 1mm; border-radius: 1px; }
+    .bin-label-qr svg { width: 20mm; height: 20mm; }
+    .bin-label-noqr { font: 8pt sans-serif; color: #666; }
+    .bin-label-text { min-width: 0; font-family: system-ui, sans-serif; }
+    .bin-label-part { font-size: 10pt; font-weight: 600; line-height: 1.15; }
+    .bin-label-meta { font-size: 7.5pt; color: #444; margin-top: 0.5mm; }
+    .bin-label-pn { font-family: ui-monospace, monospace; }
+    .bin-label-where { font-size: 8pt; margin-top: 1mm; }
+    .bin-label-detail { font-size: 8pt; font-weight: 600; font-family: ui-monospace, monospace; }
+    .bin-label-min { font-size: 7pt; color: #444; margin-top: 0.5mm; }
+
+    @media print {
+        @page { margin: 8mm; }
+        body { background: #fff !important; }
+        nav, header, footer, .d-print-none { display: none !important; }
+        .label-sheet { gap: 3mm; }
+    }
+</style>
+{% endblock extra_styles %}

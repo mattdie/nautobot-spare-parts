@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  # Keep in step with development/dev.env and COMPATIBILITY.md.
+  NAUTOBOT_VERSION: "3.0.11"
+  PYTHON_VER: "3.12"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install black==24.* flake8==7.*
+      - run: black --check --diff nautobot_spare_parts
+      - run: flake8 nautobot_spare_parts
+
+  test:
+    # The suite needs a real Nautobot, so it runs in the same container the
+    # test cluster does. Lint alone would not have caught any of the bugs this
+    # app has actually had.
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: nautobot
+          POSTGRES_PASSWORD: notasecret
+          POSTGRES_DB: nautobot
+        options: >-
+          --health-cmd "pg_isready -U nautobot"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+        ports: ["5432:5432"]
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+        ports: ["6379:6379"]
+    container:
+      image: networktocode/nautobot:3.0.11-py3.12
+      options: --user root
+    env:
+      NAUTOBOT_CONFIG: ${{ github.workspace }}/development/nautobot_config.py
+      PYTHONPATH: ${{ github.workspace }}
+      NAUTOBOT_DB_HOST: postgres
+      NAUTOBOT_DB_NAME: nautobot
+      NAUTOBOT_DB_USER: nautobot
+      NAUTOBOT_DB_PASSWORD: notasecret
+      NAUTOBOT_REDIS_HOST: redis
+      NAUTOBOT_SECRET_KEY: ci-only-not-a-real-secret-key-0123456789
+      NAUTOBOT_ALLOWED_HOSTS: "*"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for missing migrations
+        run: nautobot-server makemigrations nautobot_spare_parts --check --dry-run
+
+      - name: Run the test suite
+        run: nautobot-server test nautobot_spare_parts --verbosity 2
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pipx install poetry
+      - run: poetry build

@@ -1,481 +1,367 @@
-# Nautobot Spare Parts Inventory Plugin
+# Spare Parts Inventory — reference
 
-## Overview
-
-This plugin adds spare parts inventory management to Nautobot. It was built to solve a common problem in datacenter operations: keeping track of spare hardware across multiple locations. Whether you need to know how many Cat6 cables are in LON1 or if you have enough NVMe drives in stock for the next server refresh, this plugin handles it.
-
-The plugin works with Nautobot v2.1.7 and later versions, including v3.0. It integrates with your existing Nautobot setup, using the same location hierarchy, device types, and manufacturers you already have configured.
-
-## Why We Built This
-
-Running a datacenter means having spare parts on hand. When a drive fails or you need to cable up a new rack, you need to know what's available and where it is. Before this plugin, teams were tracking this in spreadsheets or separate systems, which meant:
-- No integration with Nautobot's existing infrastructure data
-- No audit trail of who took what and why
-- Manual tracking of stock levels
-- No connection to the actual devices being maintained
-
-This plugin brings spare parts management directly into Nautobot, where it belongs alongside your other infrastructure data.
-
-## What It Does
-
-### Managing Spare Part Types
-
-You start by defining the types of spare parts you stock. Each spare part type includes basic information like the manufacturer, part number, category (Network, Storage, Memory, etc.), and unit cost. You can link parts to specific device types they're compatible with, add tags for organization, and use custom fields if you need additional attributes.
-
-### Tracking Inventory by Location
-
-The actual inventory lives at specific locations in your Nautobot setup. For each spare part type at each location, you track how many you have on hand, set a minimum quantity that triggers low-stock alerts, and define a reorder quantity. You can also record detailed storage information like which rack, shelf, or bin the parts are in.
-
-The plugin calculates available quantity automatically by subtracting any reserved quantities from what's on hand. This is useful when you've allocated parts for upcoming maintenance but haven't physically used them yet.
-
-### Check In and Check Out
-
-This is the core workflow. When you need to use a spare part, you check it out. When you receive new parts or return unused ones, you check them in. There's also a manual adjustment option for fixing inventory count errors.
-
-Every transaction requires a reason. This isn't just bureaucracy - it creates an audit trail. When someone asks "where did those five NVMe drives go?" you can see exactly who took them, when, and why. You can optionally associate transactions with specific devices, which is especially useful for tracking which parts went into which servers.
-
-### Transaction History
-
-All check-ins and check-outs are logged permanently. Each transaction record includes the quantity moved, the before and after inventory levels, who did it, when they did it, and why. This creates a complete audit trail that survives far longer than anyone's memory of moving parts around three months ago.
-
-### Low Stock Monitoring
-
-The low stock dashboard shows everything that's below minimum quantity. It also indicates which items need reordering based on your configured reorder quantities. This saves you from manually checking stock levels or discovering you're out of parts when you need them.
-
-### Integration with Nautobot
-
-The plugin uses Nautobot's existing data structures wherever possible. It uses your Location hierarchy, so you can track parts at whatever granularity makes sense for your organization. It links to Manufacturers and Device Types you've already defined. Transactions can reference specific Devices. Everything is exposed through the REST API and works with GraphQL.
+Complete reference for the data model, the movements, the UI and the REST API.
+For a quick tour see [README.md](README.md); for the test environment see
+[development/README.md](development/README.md).
 
 ---
 
-## Installation
+## 1. Data model
 
-You'll need Nautobot 2.1.7 or later. The plugin works with Python 3.8 and up, and supports both PostgreSQL and MySQL.
+Three models. The first two are Nautobot `PrimaryModel`s (change-logged,
+taggable, custom fields, GraphQL, webhooks); the third is an append-only event
+log.
 
-Install the plugin:
+### SparePartType — the catalogue
 
-```bash
-pip install /path/to/nautobot-spare-parts
+One row per *kind* of part. Not stock.
+
+| Field | Notes |
+|---|---|
+| `name` | Required. e.g. "32GB DDR4-2666 ECC RDIMM" |
+| `manufacturer` | Optional FK to `dcim.Manufacturer`. Required if a part number is set. |
+| `part_number` | Optional. Unique per manufacturer when set; any number of part types may have none. |
+| `description` | Free text |
+| `category` | One of the categories in `choices.py` (dimm, hdd, ssd, nvme, nic, psu, fan, transceiver, cables, cpu, gpu, raid_card, riser, motherboard, other) |
+| `unit_cost` | Optional decimal, must be >= 0. Drives the estimated-value figure on the overview. |
+| `compatible_device_types` | M2M to `dcim.DeviceType`. When set, check-out warns if the part is being fitted to a device type not on the list. |
+
+### SparePartInventory — stock at a location
+
+One row per (part type, location). Enforced unique.
+
+| Field | Notes |
+|---|---|
+| `spare_part_type`, `location` | The identity of the record. Read-only after creation — its history is about this pair. |
+| `quantity_on_hand` | Units physically present. Only movements change it. |
+| `quantity_reserved` | Units on hand already promised to a job. Only allocate/deallocate change it. Database constraint: never greater than on hand. |
+| `minimum_quantity` | Reorder threshold. **0 means the part is not stock-managed and never raises a low-stock alert.** |
+| `reorder_quantity` | Suggested purchase quantity |
+| `storage_location_detail` | Free text: "Cage B, shelf 2, bin 4" |
+| `notes` | Free text |
+
+Derived, not stored:
+
+| Property | Meaning |
+|---|---|
+| `quantity_available` | `on_hand - reserved` — what you can actually take |
+| `is_out_of_stock` | `available <= 0` |
+| `is_low_stock` | `minimum_quantity > 0 and available <= minimum_quantity` |
+| `needs_reorder` | `is_low_stock and reorder_quantity > 0` |
+
+`SparePartInventory.annotate_available(queryset)` adds `available` as a
+database expression, so lists can sort and filter on it.
+
+### SparePartTransaction — the audit trail
+
+One row per movement. Append-only: `save()` refuses to update an existing row
+and `delete()` refuses outright.
+
+| Field | Notes |
+|---|---|
+| `spare_part_inventory` | Which record moved |
+| `transaction_type` | check_in / check_out / adjustment / allocation / deallocation / transfer |
+| `quantity` | Signed change to on hand (0 for pure reservations) |
+| `reserved_delta` | Signed change to reserved (0 for pure stock moves) |
+| `quantity_before` / `quantity_after` | On hand around the movement |
+| `reserved_before` / `reserved_after` | Reserved around the movement |
+| `user` | Who did it (null for automation) |
+| `timestamp` | Set on creation |
+| `reason` | Required, and required to be non-blank |
+| `related_device` | Optional FK to `dcim.Device` |
+| `jira_ticket` | Optional, validated against `^[A-Z][A-Z0-9]*-\d+$` |
+| `transfer_group` | Shared by both legs of a transfer; `other_transfer_leg` resolves the other side |
+| `request_id` | Idempotency key, unique |
+| `notes` | Free text. The only field that can be corrected afterwards, via `set_notes()`. |
+
+Because both counters are recorded before and after, history can be replayed
+without knowing the type, and every row can be checked in isolation:
+`quantity_before + quantity == quantity_after`, same for reserved.
+
+---
+
+## 2. The movements
+
+All six go through `SparePartInventory.record_movement()`, which takes a row
+lock, validates, writes the counters and the transaction in one database
+transaction, and returns the transaction.
+
+| Method | Changes | Refuses when |
+|---|---|---|
+| `check_in(quantity, reason)` | on hand `+n` | quantity <= 0 |
+| `check_out(quantity, reason, fulfil_reservation=False)` | on hand `-n`, and reserved `-n` when fulfilling | more than available; or more than reserved when fulfilling |
+| `adjust(quantity, reason)` | on hand `±n` | quantity == 0; result negative; result below reserved |
+| `allocate(quantity, reason)` | reserved `+n` | more than available |
+| `deallocate(quantity, reason)` | reserved `-n` | more than reserved |
+| `transfer_to(destination_location, quantity, reason)` | on hand `-n` here, `+n` there | same location; more than available |
+
+Every method also accepts `user`, `notes`, `request_id`; check in/out and
+allocate also accept `jira_ticket`, and check out accepts `related_device`.
+
+On refusal a `ValidationError` is raised and **nothing changes** — no counter
+moves, no transaction is written, and for a transfer no destination record is
+created.
+
+### Reservations
+
+```
+start              on hand 10   reserved 0   available 10
+allocate(2)        on hand 10   reserved 2   available 8
+check_out(2, fulfil_reservation=True)
+                   on hand  8   reserved 0   available 8
 ```
 
-Add it to your Nautobot configuration in `nautobot_config.py`:
+`check_out(2)` without `fulfil_reservation` takes from unreserved stock, and is
+refused if there is not enough. Reserved stock cannot be transferred.
+
+### Transfers
+
+Two transactions, one per side, sharing a `transfer_group` id, both inside one
+database transaction. Either side resolves the other with
+`transaction.other_transfer_leg`. The destination record is created if it does
+not exist (with `minimum_quantity=0`, so it does not immediately alert).
+
+### Idempotency
+
+Pass a `request_id` (UUID) and the movement becomes safe to repeat: if a
+transaction with that id already exists, it is returned and nothing is applied.
+
+- UI forms carry a hidden `request_id` generated per GET, so a double-clicked
+  button, a browser resubmit, or a refresh cannot double-book. The submit
+  button also disables itself.
+- API clients should send one per logical operation. Generate it before the
+  first attempt, and reuse it on retries.
+
+---
+
+## 3. UI
+
+| Page | Path |
+|---|---|
+| Overview | `/plugins/spare-parts/` |
+| Stock | `/plugins/spare-parts/spare-part-inventory/` |
+| Part types | `/plugins/spare-parts/spare-part-types/` |
+| Transaction log | `/plugins/spare-parts/spare-part-transactions/` |
+| Low stock | `/plugins/spare-parts/low-stock/` |
+| Bulk receive | `/plugins/spare-parts/spare-part-inventory/bulk-receive/` |
+| CSV export | `/plugins/spare-parts/export/inventory.csv` (honours list filters) |
+| Parts for a ticket | `/plugins/spare-parts/jira/INFRA2-1234/` |
+
+Every stock record's page carries all six action buttons. A device's page shows
+the spares fitted to it.
+
+### Filters
+
+Stock: `q`, `spare_part_type`, `location`, `manufacturer`, `category`,
+`low_stock`, `out_of_stock`, `has_reservations`, plus the quantity fields.
+
+Part types: `q`, `manufacturer`, `category`, `part_number`, `unit_cost`,
+`has_stock`.
+
+Transactions: `q`, `spare_part_inventory`, `spare_part_type`, `location`,
+`transaction_type`, `user`, `related_device`, `jira_ticket`, `timestamp` (range).
+
+`q` searches part name, part number, manufacturer, location, storage detail,
+and — for transactions — reason, notes and ticket.
+
+---
+
+## 4. REST API
+
+Base: `/api/plugins/spare-parts/`
+
+| Endpoint | Methods |
+|---|---|
+| `spare-part-types/` | GET, POST, PATCH, PUT, DELETE |
+| `spare-part-inventory/` | GET, POST, PATCH, PUT, DELETE |
+| `spare-part-transactions/` | GET only |
+
+All the list filters above work as query parameters, and `?depth=1` expands
+related objects.
+
+### Creating
+
+```bash
+curl -sX POST "$BASE/spare-part-types/" \
+  -H "Authorization: Token $TOKEN" -H "Content-Type: application/json" \
+  -d '{"name": "8TB SATA 7.2k 3.5in",
+       "manufacturer": "'"$SEAGATE_ID"'",
+       "part_number": "ST8000NM000A",
+       "category": "hdd",
+       "unit_cost": "175.00"}'
+
+curl -sX POST "$BASE/spare-part-inventory/" \
+  -H "Authorization: Token $TOKEN" -H "Content-Type: application/json" \
+  -d '{"spare_part_type": "'"$PART_ID"'",
+       "location": "'"$LOCATION_ID"'",
+       "quantity_on_hand": 14,
+       "minimum_quantity": 10,
+       "reorder_quantity": 20,
+       "storage_location_detail": "Cage A, shelf 4"}'
+```
+
+Opening stock given at creation is recorded as an `adjustment` transaction, so
+even the first number has an audit record.
+
+### Movements
+
+`POST /spare-part-inventory/<id>/<action>/` where `<action>` is one of
+`check-in`, `check-out`, `adjust`, `allocate`, `deallocate`, `transfer`.
+
+Body, common to all:
+
+| Field | Required | Notes |
+|---|---|---|
+| `quantity` | yes | Positive integer, except `adjust` where it is signed and non-zero |
+| `reason` | yes | Non-blank |
+| `notes` | no | |
+| `request_id` | no | UUID idempotency key — recommended |
+
+Extra fields:
+
+| Action | Extra |
+|---|---|
+| `check-in` | `jira_ticket` |
+| `check-out` | `related_device` (UUID), `fulfil_reservation` (bool), `jira_ticket` |
+| `allocate` | `jira_ticket` |
+| `transfer` | `destination_location` (UUID, required) |
+
+Response, 200:
+
+```json
+{
+  "status": "success",
+  "message": "Checked out 2 unit(s); 10 still available.",
+  "transaction": { "...": "the record that was written" },
+  "inventory":   { "...": "the record after the movement" }
+}
+```
+
+Errors:
+
+| Status | Meaning |
+|---|---|
+| 400 | Refused. `{"status": "error", "message": "..."}` for a rejected movement, or DRF field errors for a malformed body. Nothing changed. |
+| 403 | Caller lacks `change_sparepartinventory` |
+| 404 | No such record, or an action path with underscores instead of dashes |
+
+### What the API will not let you do
+
+- Move stock by `PATCH`ing `quantity_on_hand` or `quantity_reserved`. Those
+  fields are read-only on an existing record; the request succeeds and the
+  quantities are unchanged. Use the actions.
+- Change a record's part type or location after creation.
+- Edit or delete a transaction.
+- Delete a stock record that has history (protected FK).
+
+### Scripting example
 
 ```python
-PLUGINS = [
-    "nautobot_spare_parts",
-]
+"""Book the parts used on a ticket."""
+import os
+import uuid
 
-PLUGINS_CONFIG = {
-    "nautobot_spare_parts": {
-        # Configuration options go here if needed
-    }
-}
-```
+import requests
 
-Run the database migrations:
+BASE = "https://nautobot.example.com/api/plugins/spare-parts"
+SESSION = requests.Session()
+SESSION.headers["Authorization"] = f"Token {os.environ['NAUTOBOT_TOKEN']}"
 
-```bash
-nautobot-server migrate
-```
 
-Restart Nautobot:
+def check_out(inventory_id, quantity, reason, device_id=None, ticket=""):
+    response = SESSION.post(
+        f"{BASE}/spare-part-inventory/{inventory_id}/check-out/",
+        json={
+            "quantity": quantity,
+            "reason": reason,
+            "related_device": device_id,
+            "jira_ticket": ticket,
+            "request_id": str(uuid.uuid4()),
+        },
+        timeout=30,
+    )
+    if response.status_code == 400:
+        raise SystemExit(f"Refused: {response.json().get('message')}")
+    response.raise_for_status()
+    return response.json()
 
-```bash
-# For systemd deployments
-sudo systemctl restart nautobot nautobot-worker
 
-# For Docker deployments
-docker compose restart nautobot celery_worker
-```
-
-After restarting, you'll see "Spare Parts" in the Nautobot navigation menu.
-
----
-
-## How to Use It
-
-### Setting Up Your First Spare Parts
-
-Start by creating spare part types. Go to Spare Parts > Spare Part Types and add the parts you stock. For example, if you keep Samsung NVMe drives on hand:
-
-- Name: Samsung 980 PRO 1TB
-- Manufacturer: Samsung
-- Category: Storage
-- Part Number: MZ-V8P1T0BW
-- Unit Cost: $129.99
-- Compatible Device Types: Select the server models that use these drives
-
-Or for something simpler like network cables:
-
-- Name: Cat6 Ethernet Cable - 3ft Blue
-- Manufacturer: Monoprice
-- Category: Network
-- Part Number: CAT6-3FT-BL
-- Unit Cost: $2.99
-
-Once you have spare part types defined, add inventory to your locations. Go to Spare Parts > Inventory and click Add. For each location where you stock parts:
-
-- Spare Part Type: Samsung 980 PRO 1TB
-- Location: LON1
-- Quantity on Hand: 10
-- Minimum Quantity: 3
-- Reorder Quantity: 5
-- Storage Location Detail: Rack A12, Shelf 3, Bin 7
-
-The storage location detail is optional but useful. Six months from now when you need one of these drives, you'll be glad you wrote down where they are.
-
-### Checking Out Parts
-
-When you need to use a spare part, go to Spare Parts > Inventory and click on the item. You'll see Check In and Check Out buttons at the top of the page. Click Check Out (the yellow one) and fill in the form:
-
-- Quantity: How many you're taking
-- Reason: Why you're taking them (be specific - "Replacing failed drive in LON1-WEB-01" not just "needed it")
-- Related Device: Optional but recommended - select the device you're working on
-- Notes: Any additional context
-
-When you submit, the inventory count drops automatically and a transaction record is created with your username and timestamp.
-
-### Checking In Parts
-
-Checking in works the same way but in reverse. Click the green Check In button when you receive new parts or return unused ones. Fill in the quantity and reason ("Received shipment - PO #12345" or "Returned unused part from maintenance window").
-
-### Watching Stock Levels
-
-The Low Stock Dashboard (Spare Parts > Low Stock Dashboard) shows everything below minimum quantity. Check this regularly to know what needs reordering before you run out.
-
----
-
-## Real-World Examples
-
-### Emergency Drive Replacement
-
-It's 2 AM and a drive failed in LON1-DB-03. You grab a spare Samsung 980 PRO from the storage rack, pop it in, and start the rebuild. In the morning, you log into Nautobot:
-
-1. Find the Samsung 980 PRO 1TB inventory for LON1
-2. Click Check Out
-3. Enter quantity 1, reason "Emergency replacement for failed drive in LON1-DB-03", select LON1-DB-03 as the related device
-4. Submit
-
-Now the inventory shows 9 drives instead of 10, there's a transaction record with your name on it showing exactly which device got the new drive, and if this drops you below your minimum stock level of 3, it'll show up on the low stock dashboard.
-
-### Receiving a Shipment
-
-A box of Cat6 cables arrives. You sign for it, put them in the storage area, and update Nautobot:
-
-1. Go to Cat6 Ethernet Cable - 3ft inventory for AUS1
-2. Click Check In
-3. Enter quantity 50, reason "Received shipment - PO #12345"
-4. Add notes with vendor and invoice info for reference
-5. Submit
-
-The stock level updates and you have a record of when the shipment came in, tied to the purchase order number.
-
-### Inventory Audit
-
-You're doing a physical count and find 8 cables on the shelf, but Nautobot says there should be 12. Rather than just updating the number, you create a transaction:
-
-1. Go to the inventory item
-2. Check out 4 units (even though you're not physically taking them - you're just correcting the count)
-3. Reason: "Inventory adjustment - physical count discrepancy"
-4. Submit
-
-Now the count matches reality and there's a record of when and why it was adjusted. This helps spot patterns - if you're constantly adjusting the same items, maybe they're being used without being logged.
-
----
-
-## Technical Details
-
-### Database Models
-
-**SparePartType**
-- Defines the type of spare part
-- Links to Manufacturer
-- Specifies category and specifications
-- Supports tags and custom fields
-
-**SparePartInventory**
-- Tracks quantity at specific locations
-- Calculated fields: quantity_available, is_low_stock
-- Relationships: spare_part_type, location
-
-**SparePartTransaction**
-- Audit log of all inventory movements
-- Types: check_in, check_out, manual_adjust
-- Records: quantity, before/after values, user, timestamp, reason
-- Optional device association
-
-### REST API
-
-All models are exposed via REST API:
-
-```bash
-# List inventory
-GET /api/plugins/spare-parts/spare-part-inventory/
-
-# Get specific inventory item
-GET /api/plugins/spare-parts/spare-part-inventory/{uuid}/
-
-# Create spare part type
-POST /api/plugins/spare-parts/spare-part-types/
-Content-Type: application/json
-{
-  "name": "Dell PowerEdge R740 PSU",
-  "manufacturer": "<manufacturer-uuid>",
-  "category": "power",
-  "part_number": "450-AEIE"
-}
-
-# Check out parts (custom endpoint)
-POST /api/plugins/spare-parts/spare-part-inventory/{uuid}/check-out/
-Content-Type: application/json
-{
-  "quantity": 1,
-  "reason": "Replacement for failed PSU",
-  "related_device": "<device-uuid>"
-}
-```
-
-### Permissions
-
-The plugin respects Nautobot's object-level permissions:
-- `nautobot_spare_parts.view_spareparttype`
-- `nautobot_spare_parts.add_sparepartinventory`
-- `nautobot_spare_parts.change_sparepartinventory`
-- `nautobot_spare_parts.delete_sparepartinventory`
-- etc.
-
-### Version Compatibility
-
-| Nautobot Version | Support Status | Notes |
-|-----------------|----------------|-------|
-| 2.1.7 - 2.1.x   | Fully supported | Tested and working |
-| 2.2.x           | Fully supported | Compatible |
-| 2.3.x           | Fully supported | Tested and working |
-| 3.0.x           | Forward compatible | Ready when you upgrade |
-
-The plugin uses version detection internally to handle API differences between Nautobot versions.
-
----
-
-## Configuration
-
-Right now the plugin works with default settings. No configuration is required in PLUGINS_CONFIG. Future versions might add options like:
-
-```python
-PLUGINS_CONFIG = {
-    "nautobot_spare_parts": {
-        # Possible future options
-        "enable_automatic_reordering": False,
-        "low_stock_notification_email": "inventory@example.com",
-        "require_device_association": False,
-    }
-}
+for record in SESSION.get(f"{BASE}/spare-part-inventory/?low_stock=true", timeout=30).json()["results"]:
+    print(record["display"], record["quantity_available"], "of", record["minimum_quantity"])
 ```
 
 ---
 
-## User Interface
+## 5. Permissions
 
-The inventory list shows all your parts. Click any spare part type name to see details for that inventory item. The tables are clean - no primary key columns cluttering up the view.
+Nautobot object permissions on the three models. The important one:
 
-On the inventory detail page, you'll see Check In (green) and Check Out (yellow) buttons at the top. They're hard to miss. Below the main details, there's a list of recent transactions showing the last 20 movements for that inventory item.
+| Permission | Grants |
+|---|---|
+| `nautobot_spare_parts.view_sparepartinventory` | Read stock, overview, low stock dashboard, CSV export |
+| `nautobot_spare_parts.change_sparepartinventory` | **All six movements**, UI and API |
+| `nautobot_spare_parts.add_sparepartinventory` | Create stock records |
+| `nautobot_spare_parts.view_spareparttransaction` | Read the audit trail and the per-ticket view |
+| `..._spareparttype` | The catalogue |
 
-Low stock items get visual indicators. The Low Stock Dashboard gives you a dedicated view of everything that needs attention, with "Needs Reorder" badges for items below their reorder threshold.
+Object-level constraints are honoured: a permission constrained to
+`{"location": {"name": "AUS1 Spares Cage"}}` limits that user to that cage,
+including the movement pages.
 
----
-
-## Best Practices
-
-### Naming Parts
-
-Use clear, descriptive names that include the manufacturer and key specs. "Samsung 980 PRO 1TB" is much better than "SSD1" or "NVMe drive." Six months from now, you won't remember what "SSD1" refers to, but "Samsung 980 PRO 1TB" is unambiguous. Keep part numbers consistent with your procurement system.
-
-### Setting Stock Levels
-
-For minimum quantity, think about your typical monthly usage and multiply by 2-3. That gives you enough buffer to reorder without running out. For reorder quantity, consider your vendor's lead time. If it takes two weeks to get parts and you use 10 per month, ordering 10 at a time might leave you short. Review these numbers quarterly and adjust based on actual usage patterns.
-
-### Writing Good Transaction Reasons
-
-Be specific in your transaction reasons. "Replaced failed drive in LON1-WEB-01" tells the story. "Needed drive" doesn't help anyone. Include device names when applicable and reference ticket numbers or work orders if you have them. This makes auditing and troubleshooting much easier later.
-
-### Organizing Storage Locations
-
-Use a consistent format for storage locations. "Rack A12, Shelf 3, Bin 7" works well. Keep frequently-used items in easily accessible spots. Document the storage location in the inventory record because you won't remember where you put things three months from now.
-
-### Regular Audits
-
-Do physical counts quarterly. When you find discrepancies, don't just silently fix the numbers - use the manual adjustment transaction type and document why there's a difference. Review the transaction history to spot patterns. If the same items keep getting adjusted, maybe people are using them without logging it.
+Transactions have no add/change/delete path at all — they are only ever written
+by a movement.
 
 ---
 
-## Troubleshooting
+## 6. Alerting
 
-### Can't see inventory items in the list
+Crossing into low stock logs a warning to the `nautobot_spare_parts` logger:
 
-Check your permissions. You need the `view_sparepartinventory` permission to see inventory items.
-
-### Check In and Check Out buttons aren't showing up
-
-Make sure you have the `change_sparepartinventory` permission. Also verify you're on the detail page for an inventory item, not the list page. Click on a spare part type name in the inventory list to get to the detail page where the buttons are.
-
-### Low stock dashboard is empty
-
-The dashboard only shows items where the quantity on hand is below the minimum quantity. If it's empty, either nothing is low or you haven't set minimum quantities on your inventory items yet.
-
-### Transactions aren't being created
-
-Check that you filled in all required fields, particularly quantity and reason. If everything looks right but it's still not working, check the Nautobot logs for error messages.
-
----
-
-## Development
-
-### Local Development Setup
-
-```bash
-# Clone the repository
-git clone <repository-url>
-cd nautobot-spare-parts
-
-# Install in development mode
-pip install -e .
-
-# Or with poetry
-poetry install
-
-# Run tests
-poetry run pytest
-
-# Check code quality
-poetry run black .
-poetry run pylint nautobot_spare_parts
+```
+WARNING nautobot_spare_parts.signals Low stock: Supermicro 1000W redundant PSU
+        at AUS1 Spares Cage - available 3, minimum 4
 ```
 
-### Docker Development Environment
+It fires on the *transition* into low stock, not on every save, so an edit to
+an already-low record is not repeated noise.
 
-```bash
-# Navigate to development environment
-cd ~/projects/nautobot-local-dev
+For anything beyond a log line, use Nautobot's own machinery rather than app
+code:
 
-# Start services
-docker compose up -d
+- **Webhook** on `SparePartInventory` update — payload includes the quantities.
+- **Job Hook** on `SparePartInventory` update — a Job can check `is_low_stock`
+  and open a Jira ticket.
+- **Scheduled Job** querying `?low_stock=true` for a daily digest, which is
+  usually the version people actually want.
 
-# Access Nautobot
-# URL: http://localhost:8000
-# Username: admin
-# Password: admin
-
-# View logs
-docker compose logs -f nautobot
-
-# Restart after changes
-docker compose restart nautobot celery_worker
-```
+Metrics are deliberately not exposed here. Nautobot app metrics belong in
+`nautobot-capacity-metrics`, which can expose any queryset count without this
+app carrying a Prometheus dependency.
 
 ---
 
-## Future Plans
+## 7. Migrations
 
-There are a few features we're considering for future versions:
+| Migration | What |
+|---|---|
+| `0001_initial` | Original three models |
+| `0002_spareparttransaction_jira_ticket` | Jira reference |
+| `0003_add_field_validators` | Cost and ticket validators |
+| `0004_audit_trail_and_constraints` | Splits reserved from stock counters, adds `request_id` and `transfer_group`, adds the reserved <= on hand check constraint and the conditional part-number uniqueness, drops `slug` |
+| `0005_backfill_reserved_columns` | Moves historical allocation/deallocation numbers into the new reserved columns |
 
-- Email notifications when stock drops below minimum levels
-- Automatic generation of reorder requests or purchase requisitions
-- Barcode or QR code scanning for faster check-in/check-out
-- Better mobile interface for warehouse use
-- Bulk operations for checking in or out multiple items at once
-- Integration with procurement or ticketing systems
-- More detailed reporting and analytics
-- Multi-currency support for international deployments
+Upgrading from 1.x:
 
-These aren't promises, just ideas based on how people are using the plugin.
+1. Back up the database.
+2. `nautobot-server migrate`.
+3. `SparePartType.slug` is dropped. Nothing references it (URLs use the UUID),
+   but if you built export templates or scripts around it, change them first.
+4. Historical allocation rows get their on-hand figures set to the record's
+   current on-hand with a zero delta — those numbers were never recorded, and
+   this keeps every row internally consistent rather than inventing a movement.
+5. If migration `0004` fails on the check constraint, some record already has
+   more reserved than on hand. Find them and fix them first:
 
----
-
-## Support
-
-### Getting Help
-- Check the documentation first
-- Review transaction history for audit trails
-- Check Nautobot logs for errors: `docker compose logs nautobot`
-
-### Reporting Issues
-When reporting issues, include:
-- Nautobot version
-- Plugin version
-- Steps to reproduce
-- Error messages or logs
-- Expected vs actual behavior
-
----
-
-## About This Plugin
-
-This plugin was developed to solve real datacenter inventory management problems. It's compatible with Nautobot 2.1.7 through 3.0 and later versions. Licensed under Apache 2.0.
-
-Current feature set includes:
-- Spare part type management with categories and specifications
-- Location-based inventory tracking with min/max levels
-- Check in and check out workflows with audit trails
-- Complete transaction history with user attribution
-- Low stock monitoring and alerts
-- Full REST API and GraphQL support
-- Multi-version Nautobot compatibility
-- Clean user interface with clickable inventory items
-
----
-
-## Quick Reference
-
-To navigate the plugin:
-- Add a spare part type: Spare Parts > Spare Part Types > Add
-- Add inventory: Spare Parts > Inventory > Add
-- Check out parts: Spare Parts > Inventory > click the item > Check Out button
-- View transactions: Spare Parts > Transactions
-- See low stock: Spare Parts > Low Stock Dashboard
-
-Tips for daily use:
-- Write clear reasons for every check-in and check-out
-- Link transactions to specific devices whenever possible
-- Set minimum quantities based on actual usage patterns
-- Document storage locations so you can find parts later
-- Review the low stock dashboard regularly
-
----
-
-## Example Inventory Setup
-
-### Network Equipment Spare Parts
-```
-Location: LON1 (London)
-
-1. Cat6 Ethernet Cable - 1ft (Qty: 50, Min: 20)
-2. Cat6 Ethernet Cable - 3ft (Qty: 100, Min: 30)
-3. Cat6 Ethernet Cable - 6ft (Qty: 75, Min: 25)
-4. SFP+ 10G Transceiver (Qty: 20, Min: 5)
-5. QSFP+ 40G Transceiver (Qty: 10, Min: 3)
-```
-
-### Server Components
-```
-Location: AUS1 (Austin)
-
-1. Samsung 980 PRO 1TB NVMe (Qty: 15, Min: 5)
-2. Micron 32GB DDR4 RAM (Qty: 40, Min: 10)
-3. Intel Xeon Gold 6248R CPU (Qty: 4, Min: 2)
-4. NVIDIA A100 GPU (Qty: 2, Min: 1)
-```
-
-### Power & Cooling
-```
-Location: NYC1 (New York)
-
-1. Dell R740 PSU 750W (Qty: 8, Min: 3)
-2. APC UPS Battery (Qty: 6, Min: 2)
-3. Server Fan 80mm (Qty: 25, Min: 10)
-```
-
----
-
-**End of Documentation**
-
-For the latest updates and version information, see the project repository.
+   ```python
+   SparePartInventory.objects.filter(quantity_reserved__gt=F("quantity_on_hand"))
+   ```

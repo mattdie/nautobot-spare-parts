@@ -46,3 +46,10 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local dev scratch files (see development/README.md)
+development/.probe.py
+development/.intro.py
+
+# Demo screenshots (transient, regenerate from the running dev stack)
+.demo-shots/

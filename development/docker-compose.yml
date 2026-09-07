@@ -1,0 +1,78 @@
+# Self-contained test environment for the nautobot_spare_parts app.
+#
+# Pinned to the same Nautobot version as the EEN test cluster (3.0.11 / py3.12).
+# Override with NAUTOBOT_VERSION / PYTHON_VER in development/dev.env if you need
+# to test another release.
+#
+# Driven by ../dev  -- do not run docker compose by hand unless you know why.
+
+services:
+  nautobot:
+    image: networktocode/nautobot:${NAUTOBOT_VERSION:-3.0.11}-py${PYTHON_VER:-3.12}
+    command: nautobot-server runserver 0.0.0.0:8080 --insecure
+    ports:
+      - "${NAUTOBOT_PORT:-8081}:8080"
+    env_file: dev.env
+    environment:
+      NAUTOBOT_CONFIG: /opt/nautobot/nautobot_config.py
+      # The app is imported straight off the mounted source tree: no build step,
+      # no editable install, no stale .egg-info. Edit code -> restart -> done.
+      PYTHONPATH: /source
+    volumes:
+      - ../:/source
+      - ./nautobot_config.py:/opt/nautobot/nautobot_config.py:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # No curl in the image, so use the interpreter that is definitely there.
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://localhost:8080/health/')
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 90s
+
+  celery_worker:
+    image: networktocode/nautobot:${NAUTOBOT_VERSION:-3.0.11}-py${PYTHON_VER:-3.12}
+    command: nautobot-server celery worker --loglevel INFO
+    env_file: dev.env
+    environment:
+      NAUTOBOT_CONFIG: /opt/nautobot/nautobot_config.py
+      PYTHONPATH: /source
+      # The web container already ran migrations and created the superuser;
+      # letting the worker do it too races on the same database.
+      NAUTOBOT_DOCKER_SKIP_INIT: "true"
+    volumes:
+      - ../:/source
+      - ./nautobot_config.py:/opt/nautobot/nautobot_config.py:ro
+    depends_on:
+      nautobot:
+        condition: service_healthy
+
+  db:
+    image: postgres:16-alpine
+    env_file: dev.env
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "nautobot", "-d", "nautobot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  postgres_data:

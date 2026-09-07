@@ -1,0 +1,279 @@
+#!/usr/bin/env bash
+# One entry point for the spare-parts test environment.
+#
+#   ./dev up        start Nautobot 3.0.11 + postgres + redis, wait until ready
+#   ./dev seed      load demo parts/inventory/transactions
+#   ./dev smoke     end-to-end REST API check against the running instance
+#   ./dev test      run the app's Django test suite inside the container
+#   ./dev down      stop (keeps the database)
+#   ./dev wipe      stop and delete the database volume
+#
+# Run `./dev` with no arguments for the full list.
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+COMPOSE_FILE="${REPO_ROOT}/development/docker-compose.yml"
+ENV_FILE="${REPO_ROOT}/development/dev.env"
+PROJECT="nautobot-spare-parts-dev"
+
+# --- locate docker -----------------------------------------------------------
+# Homebrew's docker shim is a symlink into Docker.app and is not always on PATH
+# (or resolvable), so fall back to the app bundle.
+find_docker() {
+    if command -v docker >/dev/null 2>&1; then
+        command -v docker
+        return
+    fi
+    for candidate in \
+        /Applications/Docker.app/Contents/Resources/bin/docker \
+        /usr/local/bin/docker \
+        /opt/homebrew/bin/docker; do
+        [ -x "$candidate" ] && { echo "$candidate"; return; }
+    done
+    return 1
+}
+
+DOCKER="$(find_docker || true)"
+if [ -z "$DOCKER" ]; then
+    cat >&2 <<'EOF'
+Cannot find the `docker` command.
+
+Install Docker Desktop (https://www.docker.com/products/docker-desktop/), start
+it, and run this script again.
+EOF
+    exit 1
+fi
+
+require_daemon() {
+    if ! "$DOCKER" info >/dev/null 2>&1; then
+        echo "Docker is installed but the daemon is not responding." >&2
+        echo "Start Docker Desktop, wait for the whale icon to stop animating, then retry." >&2
+        exit 1
+    fi
+}
+
+compose() {
+    "$DOCKER" compose --project-name "$PROJECT" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
+}
+
+# Values needed by the host side of a few commands (port, token, ...).
+# shellcheck disable=SC1090
+port_and_token() {
+    NAUTOBOT_PORT="$(grep -E '^NAUTOBOT_PORT=' "$ENV_FILE" | cut -d= -f2)"
+    NAUTOBOT_SUPERUSER_API_TOKEN="$(grep -E '^NAUTOBOT_SUPERUSER_API_TOKEN=' "$ENV_FILE" | cut -d= -f2)"
+    NAUTOBOT_URL="http://localhost:${NAUTOBOT_PORT}"
+    export NAUTOBOT_URL NAUTOBOT_SUPERUSER_API_TOKEN
+}
+
+# --- commands ----------------------------------------------------------------
+
+cmd_up() {
+    require_daemon
+    port_and_token
+    echo "Starting ${PROJECT} (Nautobot $(grep -E '^NAUTOBOT_VERSION=' "$ENV_FILE" | cut -d= -f2))..."
+    compose up -d
+
+    echo -n "Waiting for Nautobot to become healthy"
+    for _ in $(seq 1 60); do
+        state="$(compose ps --format json nautobot 2>/dev/null | python3 -c '
+import json, sys
+raw = sys.stdin.read().strip()
+if not raw:
+    print("missing"); raise SystemExit
+# compose emits either a JSON array or one object per line depending on version
+try:
+    rows = json.loads(raw)
+    rows = rows if isinstance(rows, list) else [rows]
+except json.JSONDecodeError:
+    rows = [json.loads(line) for line in raw.splitlines() if line.strip()]
+print(rows[0].get("Health") or rows[0].get("State") or "unknown" if rows else "missing")
+' 2>/dev/null || echo unknown)"
+        if [ "$state" = "healthy" ]; then
+            echo
+            echo "Nautobot is up:  ${NAUTOBOT_URL}/"
+            echo "  login          admin / admin"
+            echo "  API token      ${NAUTOBOT_SUPERUSER_API_TOKEN}"
+            echo "  spare parts    ${NAUTOBOT_URL}/plugins/spare-parts/spare-part-inventory/"
+            echo "  API root       ${NAUTOBOT_URL}/api/plugins/spare-parts/"
+            echo
+            echo "Next:  ./dev seed   (demo data)     ./dev smoke   (API check)"
+            return 0
+        fi
+        if [ "$state" = "exited" ] || [ "$state" = "dead" ]; then
+            echo
+            echo "The Nautobot container exited. Last 60 log lines:" >&2
+            compose logs --tail 60 nautobot >&2
+            exit 1
+        fi
+        echo -n "."
+        sleep 5
+    done
+    echo
+    echo "Nautobot did not become healthy in 5 minutes. Last 80 log lines:" >&2
+    compose logs --tail 80 nautobot >&2
+    exit 1
+}
+
+cmd_down() {
+    require_daemon
+    compose down
+    echo "Stopped. Database volume kept -- use ./dev wipe to delete it."
+}
+
+cmd_wipe() {
+    require_daemon
+    read -r -p "Delete the test database and all demo data? [y/N] " answer
+    case "$answer" in
+        y | Y | yes) ;;
+        *)
+            echo "Aborted."
+            return 0
+            ;;
+    esac
+    compose down -v
+    echo "Wiped. ./dev up will rebuild from an empty database."
+}
+
+cmd_restart() {
+    require_daemon
+    # PYTHONPATH-mounted source: a restart is all that is needed to pick up code
+    # changes. Migrations still need ./dev migrate.
+    compose restart nautobot celery_worker
+    echo "Restarted. Templates and Python changes are live."
+}
+
+cmd_logs() {
+    require_daemon
+    compose logs -f --tail 100 "${@:-nautobot}"
+}
+
+cmd_status() {
+    require_daemon
+    compose ps
+}
+
+cmd_shell() {
+    require_daemon
+    compose exec nautobot bash
+}
+
+cmd_nbshell() {
+    require_daemon
+    compose exec nautobot nautobot-server nbshell
+}
+
+cmd_dbshell() {
+    require_daemon
+    compose exec db psql -U nautobot -d nautobot
+}
+
+cmd_manage() {
+    require_daemon
+    compose exec nautobot nautobot-server "$@"
+}
+
+cmd_migrate() {
+    require_daemon
+    compose exec nautobot nautobot-server migrate
+}
+
+cmd_makemigrations() {
+    require_daemon
+    compose exec nautobot nautobot-server makemigrations nautobot_spare_parts "$@"
+}
+
+cmd_test() {
+    require_daemon
+    # Any argument is treated as a test label, e.g.
+    #   ./dev test nautobot_spare_parts.tests.test_models
+    # Labels must come before the flags: nautobot-server's argument parser
+    # cannot handle positionals interspersed with options.
+    local labels=("${@:-nautobot_spare_parts}")
+    # --keepdb keeps the test database between runs; drop it with ./dev wipe.
+    compose exec nautobot nautobot-server test "${labels[@]}" --keepdb --verbosity 2
+}
+
+cmd_check() {
+    require_daemon
+    compose exec nautobot nautobot-server check
+    compose exec nautobot nautobot-server validate_models 2>/dev/null || true
+}
+
+cmd_seed() {
+    require_daemon
+    # nautobot-server parses -c as its config path, so feed the script on stdin.
+    compose exec -T nautobot nautobot-server shell --interface python \
+        <"${REPO_ROOT}/development/seed_demo_data.py"
+}
+
+cmd_smoke() {
+    require_daemon
+    port_and_token
+    python3 "${REPO_ROOT}/development/api_smoke_test.py"
+}
+
+cmd_lint() {
+    if command -v black >/dev/null 2>&1 && command -v flake8 >/dev/null 2>&1; then
+        black --check "${REPO_ROOT}/nautobot_spare_parts"
+        flake8 "${REPO_ROOT}/nautobot_spare_parts"
+    else
+        require_daemon
+        # The linters are not in the Nautobot image and its bin dir is not on
+        # PATH for a non-login shell, so call them as modules.
+        compose exec nautobot bash -lc \
+            "pip install -q 'black==24.*' 'flake8==7.*' && cd /source && python -m black --check nautobot_spare_parts && python -m flake8 nautobot_spare_parts"
+    fi
+}
+
+usage() {
+    sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    cat <<'EOF'
+
+All commands:
+  up               start the stack and wait until Nautobot answers
+  down             stop the stack, keep the database
+  wipe             stop the stack and delete the database (asks first)
+  restart          restart Nautobot to pick up code changes
+  status           docker compose ps
+  logs [service]   follow logs (default: nautobot)
+  shell            bash inside the Nautobot container
+  nbshell          nautobot-server nbshell (Django ORM)
+  dbshell          psql inside the database container
+  manage <args>    run any nautobot-server subcommand
+  migrate          apply migrations
+  makemigrations   generate migrations for this app
+  test [args]      run the app test suite
+  check            nautobot-server check
+  seed             load demo data
+  smoke            REST API end-to-end check
+  lint             black --check + flake8
+EOF
+}
+
+case "${1:-}" in
+    up) shift && cmd_up "$@" ;;
+    down) shift && cmd_down "$@" ;;
+    wipe) shift && cmd_wipe "$@" ;;
+    restart) shift && cmd_restart "$@" ;;
+    logs) shift && cmd_logs "$@" ;;
+    status | ps) shift && cmd_status "$@" ;;
+    shell | bash) shift && cmd_shell "$@" ;;
+    nbshell) shift && cmd_nbshell "$@" ;;
+    dbshell | psql) shift && cmd_dbshell "$@" ;;
+    manage) shift && cmd_manage "$@" ;;
+    migrate) shift && cmd_migrate "$@" ;;
+    makemigrations) shift && cmd_makemigrations "$@" ;;
+    test) shift && cmd_test "$@" ;;
+    check) shift && cmd_check "$@" ;;
+    seed) shift && cmd_seed "$@" ;;
+    smoke) shift && cmd_smoke "$@" ;;
+    lint) shift && cmd_lint "$@" ;;
+    "" | -h | --help | help) usage ;;
+    *)
+        echo "Unknown command: $1" >&2
+        echo >&2
+        usage >&2
+        exit 1
+        ;;
+esac

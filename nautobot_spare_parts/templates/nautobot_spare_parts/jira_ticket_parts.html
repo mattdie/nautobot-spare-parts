@@ -1,0 +1,74 @@
+{% extends 'base.html' %}
+{% load render_table from django_tables2 %}
+
+{% block title %}Parts for {{ ticket }}{% endblock %}
+
+{% block content %}
+<h1>Parts for <span class="font-monospace">{{ ticket }}</span></h1>
+
+{% if transaction_count %}
+<div class="row mb-16">
+    <div class="col-lg-6">
+        <div class="card">
+            <div class="card-header"><strong>Consumed</strong></div>
+            {% if consumed %}
+            <table class="table table-sm mb-0">
+                <thead><tr><th>Part</th><th class="text-end">Units</th></tr></thead>
+                <tbody>
+                    {% for row in consumed %}
+                    <tr>
+                        <td>{{ row.part }}</td>
+                        <td class="text-end font-monospace">{{ row.units }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="card-body text-body-secondary">Nothing checked out against this ticket.</div>
+            {% endif %}
+        </div>
+    </div>
+    <div class="col-lg-6">
+        <div class="card">
+            <div class="card-header"><strong>Summary</strong></div>
+            <table class="table table-sm mb-0">
+                <tr>
+                    <th>Movements</th>
+                    <td class="font-monospace">{{ transaction_count }}</td>
+                </tr>
+                <tr>
+                    <th>Still reserved</th>
+                    <td class="font-monospace">
+                        {% if reserved_still_open > 0 %}
+                            <strong class="text-warning">{{ reserved_still_open }}</strong>
+                            <span class="text-body-secondary">— release or check out</span>
+                        {% else %}
+                            0
+                        {% endif %}
+                    </td>
+                </tr>
+                <tr>
+                    <th>Devices touched</th>
+                    <td>
+                        {% for device in devices %}
+                            <span class="font-monospace">{{ device }}</span>{% if not forloop.last %}, {% endif %}
+                        {% empty %}
+                            <span class="text-body-secondary">none linked</span>
+                        {% endfor %}
+                    </td>
+                </tr>
+            </table>
+        </div>
+    </div>
+</div>
+
+{% render_table table 'inc/table.html' %}
+{% else %}
+<div class="card">
+    <div class="card-body">
+        No spare part movements are booked against <span class="font-monospace">{{ ticket }}</span>.
+        Movements are linked by filling in the Jira ticket field on check-in, check-out or allocation.
+    </div>
+</div>
+{% endif %}
+{% endblock content %}

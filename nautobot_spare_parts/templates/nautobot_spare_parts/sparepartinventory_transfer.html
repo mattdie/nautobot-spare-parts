@@ -1,72 +1,12 @@
-{% extends 'base.html' %}
-{% load form_helpers %}
+{% extends 'nautobot_spare_parts/inc/movement_base.html' %}
 
-{% block content %}
-<form method="post" class="h-100 vstack">
-    {% csrf_token %}
-
-    <div class="row justify-content-center align-content-start flex-fill">
-        <div class="col-lg-8 col-md-10">
-
-            <div class="card mb-10">
-                <div class="card-header"><strong>SOURCE</strong></div>
-                <div class="card-body">
-                    <div class="mb-10 d-md-flex justify-content-center">
-                        <label class="col-md-3 col-form-label">Part</label>
-                        <div class="col-md-9">
-                            <p class="form-control-plaintext">
-                                <a href="{{ inventory.spare_part_type.get_absolute_url }}">{{ inventory.spare_part_type }}</a>
-                            </p>
-                        </div>
-                    </div>
-                    <div class="mb-10 d-md-flex justify-content-center">
-                        <label class="col-md-3 col-form-label">From Location</label>
-                        <div class="col-md-9">
-                            <p class="form-control-plaintext">{{ inventory.location }}</p>
-                        </div>
-                    </div>
-                    <div class="mb-10 d-md-flex justify-content-center">
-                        <label class="col-md-3 col-form-label">Available</label>
-                        <div class="col-md-9">
-                            <p class="form-control-plaintext">
-                                <strong>{{ inventory.quantity_available }}</strong>
-                                {% if inventory.is_low_stock %}
-                                <span class="badge bg-warning text-dark ms-2">Low Stock</span>
-                                {% endif %}
-                            </p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="card mb-10">
-                <div class="card-header"><strong>TRANSFER</strong></div>
-                <div class="card-body">
-                    {% render_field form.quantity %}
-                    {% render_field form.destination_location %}
-                    {% render_field form.reason %}
-                </div>
-            </div>
-
-            <div class="card mb-10">
-                <div class="card-header"><strong>TRACKING</strong></div>
-                <div class="card-body">
-                    {% render_field form.jira_ticket %}
-                    {% render_field form.notes %}
-                </div>
-            </div>
-
-        </div>
-    </div>
-
-    <div class="nb-form-sticky-footer">
-        <button type="submit" class="btn btn-primary">
-            <span class="mdi mdi-swap-horizontal me-4"></span>Transfer
-        </button>
-        <a href="{{ inventory.get_absolute_url }}" class="btn btn-secondary">
-            <span class="mdi mdi-close me-4"></span>Cancel
-        </a>
-    </div>
-
-</form>
-{% endblock %}
+{% block action_intro %}
+<p class="text-body-secondary">
+    Move stock to another location. Two transaction records are written — one out, one in —
+    and they are linked to each other, so both sites can see where the units went. If the
+    destination has no record for this part yet, one is created.
+</p>
+<p class="text-body-secondary">
+    Reserved units cannot be transferred. Release the reservation first if you need to move them.
+</p>
+{% endblock action_intro %}

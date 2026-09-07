@@ -4,52 +4,49 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "nautobot-spare-parts"
-version = "1.0.0"
-description = "Nautobot plugin for tracking spare parts inventory across datacenter locations"
-authors = ["Your Name <your.email@example.com>"]
+version = "2.0.0"
+description = "Nautobot app for tracking spare parts stock across datacenter locations"
+authors = ["Matthijs Diemel <mdiemel@een.com>"]
 license = "Apache-2.0"
 readme = "README.md"
-homepage = "https://github.com/yourusername/nautobot-spare-parts"
-repository = "https://github.com/yourusername/nautobot-spare-parts"
-keywords = ["nautobot", "nautobot-plugin", "inventory", "spare-parts"]
+homepage = "https://github.com/mattdie/nautobot-spare-parts"
+repository = "https://github.com/mattdie/nautobot-spare-parts"
+keywords = ["nautobot", "nautobot-app", "inventory", "spare-parts", "dcim"]
 classifiers = [
-    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
     "Development Status :: 4 - Beta",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Framework :: Django",
 ]
 packages = [
     { include = "nautobot_spare_parts" },
 ]
 
 [tool.poetry.dependencies]
-python = "^3.8"
-nautobot = ">=2.0.0,<4.0.0"
-packaging = ">=20.0"
+# Matches the app's min_version/max_version. See COMPATIBILITY.md for what has
+# actually been tested.
+python = "^3.10"
+nautobot = ">=3.0.0,<4.0.0"
+# Pure Python, no dependencies of its own. Only used to render the QR codes on
+# the printable shelf labels; the label sheet degrades to text without it.
+segno = "^1.6"
 
-[tool.poetry.dev-dependencies]
-pytest = "^7.0"
-black = "^23.0"
-flake8 = "^6.0"
+[tool.poetry.group.dev.dependencies]
+black = "^24.0"
+flake8 = "^7.0"
 
-[tool.poetry.plugins."nautobot.apps"]
+[tool.poetry.plugins."nautobot.app"]
 "nautobot_spare_parts" = "nautobot_spare_parts:NautobotSparePartsConfig"
 
 [tool.black]
 line-length = 120
-target-version = ['py38']
-include = '\.pyi?$'
-exclude = '''
+target-version = ['py310']
+extend-exclude = '''
 /(
-    \.git
-  | \.tox
-  | \.venv
-  | _build
-  | build
-  | dist
-  | migrations
+    migrations
+  | development
 )/
 '''

@@ -1,50 +1,13 @@
-{% extends 'base.html' %}
-{% load form_helpers %}
+{% extends 'nautobot_spare_parts/inc/movement_base.html' %}
 
-{% block content %}
-<div class="row">
-    <div class="col-md-12">
-        <h1>Deallocate Spare Parts</h1>
-        <div class="panel panel-default">
-            <div class="panel-heading">
-                <strong>{{ inventory.spare_part_type }}</strong> at <strong>{{ inventory.location }}</strong>
-            </div>
-            <div class="panel-body">
-                <table class="table table-condensed">
-                    <tr>
-                        <th>On Hand</th>
-                        <td>{{ inventory.quantity_on_hand }}</td>
-                    </tr>
-                    <tr>
-                        <th>Reserved</th>
-                        <td>{{ inventory.quantity_reserved }}</td>
-                    </tr>
-                    <tr>
-                        <th>Available</th>
-                        <td>{{ inventory.quantity_available }}</td>
-                    </tr>
-                    <tr>
-                        <th>Minimum Quantity</th>
-                        <td>{{ inventory.minimum_quantity }}</td>
-                    </tr>
-                </table>
+{% block action_intro %}
+<p class="text-body-secondary">
+    Release a reservation without consuming the stock — the work was cancelled, or the parts
+    turned out not to be needed. On-hand stock does not change.
+</p>
+{% if not inventory.quantity_reserved %}
+<div class="alert alert-warning">Nothing is reserved at this location, so there is nothing to release.</div>
+{% endif %}
+{% endblock action_intro %}
 
-                <form method="post" class="form form-horizontal">
-                    {% csrf_token %}
-                    {% render_form form %}
-                    <div class="form-group">
-                        <div class="col-md-9 col-md-offset-3">
-                            <button type="submit" class="btn btn-primary">
-                                <i class="mdi mdi-check"></i> {{ action }}
-                            </button>
-                            <a href="{{ inventory.get_absolute_url }}" class="btn btn-default">
-                                Cancel
-                            </a>
-                        </div>
-                    </div>
-                </form>
-            </div>
-        </div>
-    </div>
-</div>
-{% endblock %}
+{% block action_warnings %}{% endblock action_warnings %}

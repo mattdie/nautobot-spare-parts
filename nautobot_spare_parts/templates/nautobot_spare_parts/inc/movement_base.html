@@ -1,0 +1,105 @@
+{% extends 'base.html' %}
+{% load form_helpers %}
+{% load helpers %}
+
+{# Shared page for every single-record stock action. Subtemplates set the      #}
+{# action_intro block and, where it helps, action_warnings.                    #}
+
+{% block title %}{{ action }} — {{ inventory.spare_part_type }} at {{ inventory.location }}{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-lg-7">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <strong>{{ action }}</strong>
+                <span class="text-body-secondary">{{ inventory.location }}</span>
+            </div>
+            <div class="card-body">
+                <p class="mb-16">
+                    <a href="{{ inventory.spare_part_type.get_absolute_url }}">{{ inventory.spare_part_type }}</a>
+                    {% if inventory.spare_part_type.part_number %}
+                        <span class="text-body-secondary font-monospace">{{ inventory.spare_part_type.part_number }}</span>
+                    {% endif %}
+                </p>
+
+                {% block action_intro %}{% endblock action_intro %}
+                {% block action_warnings %}
+                    {% if inventory.is_out_of_stock %}
+                        <div class="alert alert-danger">Nothing is available at this location right now.</div>
+                    {% elif inventory.is_low_stock %}
+                        <div class="alert alert-warning">
+                            At or below the minimum of {{ inventory.minimum_quantity }} — {{ inventory.quantity_available }} available.
+                        </div>
+                    {% endif %}
+                {% endblock action_warnings %}
+
+                <form method="post" class="form">
+                    {% csrf_token %}
+                    {% render_form form %}
+                    <div class="d-flex gap-8 mt-16">
+                        {# The submit button disables itself so an impatient   #}
+                        {# double-click cannot fire two requests. The hidden   #}
+                        {# request_id makes a retry harmless even if it does.  #}
+                        <button type="submit" class="btn btn-primary" data-submit-once>{{ action }}</button>
+                        <a href="{{ return_url }}" class="btn btn-outline-secondary">Cancel</a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-5">
+        <div class="card">
+            <div class="card-header"><strong>Current state</strong></div>
+            <table class="table table-sm mb-0">
+                <tr>
+                    <th>On hand</th>
+                    <td class="font-monospace">{{ inventory.quantity_on_hand }}</td>
+                </tr>
+                <tr>
+                    <th>Reserved</th>
+                    <td class="font-monospace">{{ inventory.quantity_reserved }}</td>
+                </tr>
+                <tr>
+                    <th>Available</th>
+                    <td class="font-monospace"><strong>{{ inventory.quantity_available }}</strong></td>
+                </tr>
+                <tr>
+                    <th>Minimum</th>
+                    <td class="font-monospace">{{ inventory.minimum_quantity }}{% if not inventory.minimum_quantity %} <span class="text-body-secondary">(not stock-managed)</span>{% endif %}</td>
+                </tr>
+                <tr>
+                    <th>Storage</th>
+                    <td>{{ inventory.storage_location_detail|placeholder }}</td>
+                </tr>
+            </table>
+        </div>
+
+        <div class="card mt-16">
+            <div class="card-header"><strong>Other actions</strong></div>
+            <div class="card-body d-flex flex-wrap gap-8">
+                {% for key, item in action_urls.items %}
+                    {% if item.label != action %}
+                        <a href="{{ item.url }}" class="btn btn-sm btn-outline-secondary">{{ item.label }}</a>
+                    {% endif %}
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock content %}
+
+{% block javascript %}
+{{ block.super }}
+<script>
+    document.querySelectorAll('form').forEach(function (form) {
+        form.addEventListener('submit', function () {
+            form.querySelectorAll('[data-submit-once]').forEach(function (button) {
+                button.disabled = true;
+                button.textContent = 'Working…';
+            });
+        });
+    });
+</script>
+{% endblock javascript %}

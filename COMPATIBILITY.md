@@ -1,64 +1,55 @@
-# Nautobot Version Compatibility
+# Compatibility
 
-This plugin is designed to work across multiple versions of Nautobot.
+## Verified
 
-## Supported Versions
+| Nautobot | Python | Status | How |
+|---|---|---|---|
+| 3.0.11 | 3.12 | Verified | Full test suite (121 tests) plus an end-to-end API smoke test, run in `networktocode/nautobot:3.0.11-py3.12` |
 
-- ✅ Nautobot 2.1.x (tested with 2.1.7)
-- ✅ Nautobot 2.2.x
-- ✅ Nautobot 2.3.x (tested with 2.3.16)
-- ✅ Nautobot 3.0.x (forward compatible)
+3.0.11 is the version running in the EEN test cluster, which is why it is the
+pinned target in `development/dev.env` and in CI.
 
-## Version-Specific Features
+## Declared range
 
-### Nautobot 2.1.7 - 2.2.x
-- Standard Django REST Framework serializers
-- Basic ViewSet support
-- All core features available
+`min_version = "3.0.0"`, `max_version = "3.99"`.
 
-### Nautobot 2.3.x+
-- Enhanced API URL support via `get_absolute_url(api=True)`
-- Improved serialization
-- All core features available
+## Not supported: Nautobot 2.x
 
-### Nautobot 3.0.x
-- Future-proof design
-- Compatible with anticipated 3.0 APIs
-- All core features available
+Earlier releases of this app claimed 2.0–3.x support. That claim was not true
+and is now removed:
 
-## Compatibility Notes
+- The UI templates target Nautobot 3's Bootstrap 5 markup. On Nautobot 2 (which
+  is Bootstrap 3) they render, but badly.
+- Several pages were broken on *every* version until this release — the low
+  stock dashboard, list search, and the transactions API all returned HTTP 500 —
+  so "tested with 2.1.7 / 2.3.16" cannot have been accurate.
+- Nothing in the app was ever run against 2.x by anyone who could confirm it.
 
-### API Serializers
-The plugin uses standard Django REST Framework `read_only=True` for nested serializers, which is compatible across all versions.
+If 2.x support is needed, the work is: re-check the `nautobot.apps.*` imports,
+convert the templates back to Bootstrap 3 classes (or branch on version), and
+run the suite against a 2.4 container by changing `NAUTOBOT_VERSION` in
+`development/dev.env`. The test suite is the thing that makes that answerable.
 
-### URL Generation
-The `get_absolute_url()` method accepts an optional `api` parameter:
-- Nautobot 2.1.x-2.2.x: Parameter is ignored (backward compatible)
-- Nautobot 2.3.x+: Returns API URL when `api=True`
+## Testing another version yourself
 
-### Views
-The plugin uses standard `NautobotUIViewSet` which is available across all supported versions.
+```bash
+# development/dev.env
+NAUTOBOT_VERSION=3.1.3
+PYTHON_VER=3.12
+```
 
-## Testing
+```bash
+./dev wipe && ./dev up && ./dev test && ./dev seed && ./dev smoke
+```
 
-The plugin has been tested with:
-- Nautobot 2.3.16 (primary development version)
-- Nautobot 2.1.7 compatibility verified
+If all four are clean, that version works. Please open a PR updating the table
+above with what you ran.
 
-For production deployments on other versions, please test in a staging environment first.
+## Reporting a problem
 
-## Migration Path
+Include:
 
-### From 2.1.7 to 2.3+
-No special migration steps required. The plugin works seamlessly across versions.
-
-### From 2.x to 3.0
-When Nautobot 3.0 is released, the plugin should work without modification due to its use of standard APIs. Monitor Nautobot 3.0 release notes for any breaking changes.
-
-## Reporting Issues
-
-If you encounter compatibility issues with a specific Nautobot version, please report them with:
-- Nautobot version (`nautobot-server --version`)
-- Plugin version
-- Full error traceback
-- Steps to reproduce
+- `nautobot-server --version`
+- the app version
+- the full traceback
+- what you clicked or POSTed
