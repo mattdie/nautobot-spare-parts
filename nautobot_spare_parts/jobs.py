@@ -56,7 +56,7 @@ class LowStockReport(Job):
         if not records:
             self.logger.info("Nothing is below its minimum.")
             if notify_zulip:
-                zulip.notify_job(self.logger, "✅ Spare Parts Low Stock Report: nothing is below its minimum.")
+                zulip.notify_job(self.logger, "Spare Parts Low Stock Report: nothing is below its minimum.")
             return "0 parts below minimum."
 
         for record in records:
@@ -72,7 +72,7 @@ class LowStockReport(Job):
 
         if notify_zulip:
             lines = [
-                f"⚠️ **Spare Parts Low Stock Report** — {len(records)} part(s) below minimum",
+                f"**Spare Parts Low Stock Report** — {len(records)} part(s) below minimum",
                 "",
             ]
             for record in records[:20]:
@@ -110,10 +110,10 @@ class StaleReservationsReport(Job):
         if not records:
             self.logger.info("No stock is reserved anywhere.")
             if notify_zulip:
-                zulip.notify_job(self.logger, "✅ Spare Parts Stale Reservations Report: nothing is reserved anywhere.")
+                zulip.notify_job(self.logger, "Spare Parts Stale Reservations Report: nothing is reserved anywhere.")
             return "0 records with reservations."
 
-        lines = [f"⚠️ **Spare Parts Stale Reservations Report** — {len(records)} record(s) holding reserved stock", ""]
+        lines = [f"**Spare Parts Stale Reservations Report** — {len(records)} record(s) holding reserved stock", ""]
         for record in records:
             tickets = (
                 SparePartTransaction.objects.filter(
