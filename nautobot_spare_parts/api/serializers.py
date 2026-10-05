@@ -10,7 +10,9 @@ PATCH silently stop working.
 from rest_framework import serializers
 
 from nautobot.apps.api import BaseModelSerializer, NautobotModelSerializer
+from nautobot.dcim.models import DeviceType
 
+from nautobot_spare_parts.choices import FailureReasonChoices
 from nautobot_spare_parts.models import (
     JIRA_TICKET_VALIDATOR,
     SparePartInventory,
@@ -24,6 +26,14 @@ class SparePartTypeSerializer(NautobotModelSerializer):
 
     total_quantity_on_hand = serializers.IntegerField(read_only=True)
     part_number = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    # DRF's auto-generated field for this one is a HyperlinkedRelatedField,
+    # which blows up building the URL for a DeviceType and gets silently
+    # dropped from the response instead of crashing the whole request --
+    # so the field just vanished from every response. A plain PK list
+    # sidesteps that and is also easier for a script to post.
+    compatible_device_types = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=DeviceType.objects.all(), required=False
+    )
 
     class Meta:
         """Meta class for SparePartTypeSerializer."""
@@ -52,7 +62,6 @@ class SparePartInventorySerializer(NautobotModelSerializer):
     quantity_available = serializers.IntegerField(read_only=True)
     is_low_stock = serializers.BooleanField(read_only=True)
     is_out_of_stock = serializers.BooleanField(read_only=True)
-    needs_reorder = serializers.BooleanField(read_only=True)
 
     class Meta:
         """Meta class for SparePartInventorySerializer."""
@@ -92,6 +101,7 @@ class SparePartTransactionSerializer(BaseModelSerializer):
             "reason",
             "related_device",
             "jira_ticket",
+            "failure_reason",
             "transfer_group",
             "request_id",
             "notes",
@@ -149,6 +159,28 @@ class CheckOutSerializer(MovementSerializer):
         allow_blank=True,
         validators=[JIRA_TICKET_VALIDATOR],
         help_text="Jira ticket reference (e.g. INFRA2-1234)",
+    )
+    failure_reason = serializers.ChoiceField(
+        choices=FailureReasonChoices,
+        required=False,
+        allow_blank=True,
+        help_text="Why the old part failed. Optional, but feeds vendor/model reliability reporting.",
+    )
+    component_slot = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=64,
+        help_text=(
+            "How this part shows up in the device's own Inventory items, e.g. 'sdb' or 'DIMMD1'. "
+            "Required, along with component_serial, when related_device is set and the part type's "
+            "category is one that lives inside a device."
+        ),
+    )
+    component_serial = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=255,
+        help_text="Serial of the unit actually being fitted.",
     )
 
 

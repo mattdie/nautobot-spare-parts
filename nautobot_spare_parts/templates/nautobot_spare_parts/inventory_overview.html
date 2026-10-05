@@ -1,6 +1,7 @@
 {% extends 'base.html' %}
 {% load humanize %}
 {% load helpers %}
+{% load spare_parts_helpers %}
 
 {% block title %}Spare Parts{% endblock %}
 
@@ -9,6 +10,7 @@
     <h1 class="mb-0">Spare Parts</h1>
     <div class="d-flex gap-8">
         <a href="{% url 'plugins:nautobot_spare_parts:sparepartinventory_bulk_receive' %}" class="btn btn-primary">Bulk Receive</a>
+        <a href="{% url 'plugins:nautobot_spare_parts:cost_dashboard' %}" class="btn btn-outline-secondary">Cost (USD)</a>
         <a href="{% url 'plugins:nautobot_spare_parts:inventory_csv_export' %}" class="btn btn-outline-secondary">Export CSV</a>
     </div>
 </div>
@@ -28,8 +30,8 @@
             <td class="font-monospace text-end">{{ total_reserved|intcomma }}</td>
         </tr>
         <tr>
-            <th class="pe-16">Estimated value</th>
-            <td class="font-monospace text-end">{{ total_value|floatformat:0|intcomma }}</td>
+            <th class="pe-16">Estimated value (USD)</th>
+            <td class="font-monospace text-end">{{ total_value|usd }}</td>
             <th class="ps-16 pe-16">Low stock</th>
             <td class="font-monospace text-end">
                 {% if low_stock_count %}

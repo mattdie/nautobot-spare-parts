@@ -10,7 +10,17 @@ from django.db.models import F, Q
 from nautobot.apps.jobs import BooleanVar, Job, ObjectVar, register_jobs
 from nautobot.dcim.models import Location
 
+from nautobot_spare_parts import zulip
 from nautobot_spare_parts.models import SparePartInventory, SparePartTransaction
+
+NOTIFY_ZULIP_VAR = BooleanVar(
+    default=False,
+    label="Post to Zulip",
+    description=(
+        "Also post this report to Zulip. No-op if no webhook is configured. "
+        "Off by default -- this is an explicit choice every run, not a standing subscription."
+    ),
+)
 
 name = "Spare Parts"
 
@@ -23,11 +33,7 @@ class LowStockReport(Job):
         required=False,
         description="Limit the report to one location. Leave blank for all.",
     )
-    only_with_reorder_quantity = BooleanVar(
-        default=False,
-        label="Only parts with a reorder quantity set",
-        description="Useful when the output is going to feed a purchase order.",
-    )
+    notify_zulip = NOTIFY_ZULIP_VAR
 
     class Meta:
         """Job metadata."""
@@ -37,40 +43,44 @@ class LowStockReport(Job):
         read_only = True
         has_sensitive_variables = False
 
-    def run(self, location=None, only_with_reorder_quantity=False):  # pylint: disable=arguments-differ
+    def run(self, location=None, notify_zulip=False):  # pylint: disable=arguments-differ
         """Log the low-stock lines, worst shortfall first."""
         queryset = SparePartInventory.objects.select_related(
             "spare_part_type", "spare_part_type__manufacturer", "location"
         ).filter(Q(minimum_quantity__gt=0) & Q(quantity_on_hand__lte=F("minimum_quantity") + F("quantity_reserved")))
         if location is not None:
             queryset = queryset.filter(location=location)
-        if only_with_reorder_quantity:
-            queryset = queryset.filter(reorder_quantity__gt=0)
 
         records = sorted(queryset, key=lambda record: record.quantity_available - record.minimum_quantity)
 
         if not records:
             self.logger.info("Nothing is below its minimum.")
+            if notify_zulip:
+                zulip.notify_job(self.logger, "✅ Spare Parts Low Stock Report: nothing is below its minimum.")
             return "0 parts below minimum."
 
         for record in records:
             shortfall = record.minimum_quantity - record.quantity_available
             self.logger.warning(
-                "%s short by %s (available %s, minimum %s, reorder %s)",
+                "%s short by %s (available %s, minimum %s)",
                 record.spare_part_type,
                 shortfall,
                 record.quantity_available,
                 record.minimum_quantity,
-                record.reorder_quantity or "not set",
                 extra={"object": record},
             )
 
-        no_reorder = [record for record in records if not record.reorder_quantity]
-        if no_reorder:
-            self.logger.info(
-                "%s of these have no reorder quantity set, so nobody knows how many to buy.",
-                len(no_reorder),
-            )
+        if notify_zulip:
+            lines = [
+                f"⚠️ **Spare Parts Low Stock Report** — {len(records)} part(s) below minimum",
+                "",
+            ]
+            for record in records[:20]:
+                shortfall = record.minimum_quantity - record.quantity_available
+                lines.append(f"- **{record.spare_part_type}** at {record.location}: short by {shortfall}")
+            if len(records) > 20:
+                lines.append(f"- …and {len(records) - 20} more")
+            zulip.notify_job(self.logger, "\n".join(lines))
 
         return f"{len(records)} part(s) below minimum."
 
@@ -82,6 +92,8 @@ class StaleReservationsReport(Job):
     counts drift away from reality, and nothing else in the app nags about it.
     """
 
+    notify_zulip = NOTIFY_ZULIP_VAR
+
     class Meta:
         """Job metadata."""
 
@@ -90,15 +102,18 @@ class StaleReservationsReport(Job):
         read_only = True
         has_sensitive_variables = False
 
-    def run(self):  # pylint: disable=arguments-differ
+    def run(self, notify_zulip=False):  # pylint: disable=arguments-differ
         """Log each record with stock reserved, plus the tickets involved."""
         records = SparePartInventory.objects.filter(quantity_reserved__gt=0).select_related(
             "spare_part_type", "location"
         )
         if not records:
             self.logger.info("No stock is reserved anywhere.")
+            if notify_zulip:
+                zulip.notify_job(self.logger, "✅ Spare Parts Stale Reservations Report: nothing is reserved anywhere.")
             return "0 records with reservations."
 
+        lines = [f"⚠️ **Spare Parts Stale Reservations Report** — {len(records)} record(s) holding reserved stock", ""]
         for record in records:
             tickets = (
                 SparePartTransaction.objects.filter(
@@ -109,14 +124,21 @@ class StaleReservationsReport(Job):
                 .values_list("jira_ticket", flat=True)
                 .distinct()
             )
+            ticket_note = f" (allocated against {', '.join(sorted(set(tickets)))})" if tickets else ""
             self.logger.warning(
                 "%s at %s: %s reserved%s",
                 record.spare_part_type,
                 record.location,
                 record.quantity_reserved,
-                f" (allocated against {', '.join(sorted(set(tickets)))})" if tickets else "",
+                ticket_note,
                 extra={"object": record},
             )
+            lines.append(
+                f"- **{record.spare_part_type}** at {record.location}: {record.quantity_reserved} reserved{ticket_note}"
+            )
+
+        if notify_zulip:
+            zulip.notify_job(self.logger, "\n".join(lines))
 
         return f"{len(records)} record(s) holding reserved stock."
 

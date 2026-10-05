@@ -18,10 +18,11 @@ from nautobot.apps.forms import (
     StaticSelect2,
     StaticSelect2Multiple,
     TagsBulkEditFormMixin,
+    add_blank_choice,
 )
 from nautobot.dcim.models import Device, DeviceType, Location, Manufacturer
 
-from nautobot_spare_parts.choices import SparePartCategoryChoices, SparePartTransactionTypeChoices
+from nautobot_spare_parts.choices import FailureReasonChoices, SparePartCategoryChoices, SparePartTransactionTypeChoices
 from nautobot_spare_parts.filters import locations_in_datacenter_of
 from nautobot_spare_parts.models import (
     JIRA_TICKET_VALIDATOR,
@@ -31,6 +32,26 @@ from nautobot_spare_parts.models import (
 )
 
 QUANTITY_HELP = "Whole number of units."
+
+
+def require_component_fields(form, cleaned, *, device, part_type):
+    """Demand a slot and serial when this check-out is fitting a device component.
+
+    Only reachable once a device and a part type are both known, so it runs
+    the same way from every check-out form that can end up here -- the
+    shelf-first form and the device-first form alike.
+    """
+    if device is None or part_type is None:
+        return
+    if part_type.category not in SparePartCategoryChoices.DEVICE_COMPONENT_CATEGORIES:
+        return
+    if not (cleaned.get("component_slot") or "").strip():
+        form.add_error(
+            "component_slot",
+            f"Required for a {part_type.get_category_display()} -- which slot on {device.name} is this?",
+        )
+    if not (cleaned.get("component_serial") or "").strip():
+        form.add_error("component_serial", "Required so the device's own hardware record stays accurate.")
 
 
 class SparePartTypeForm(NautobotModelForm):
@@ -130,7 +151,6 @@ class SparePartInventoryForm(NautobotModelForm):
             "quantity_on_hand",
             "quantity_reserved",
             "minimum_quantity",
-            "reorder_quantity",
             "storage_location_detail",
             "notes",
             "tags",
@@ -145,7 +165,8 @@ class SparePartInventoryForm(NautobotModelForm):
         )
         self.fields["quantity_reserved"].help_text = "Leave at 0 on a new record; use Allocate to reserve stock."
         self.fields["minimum_quantity"].help_text = (
-            "Raise a low-stock alert at or below this level. 0 disables alerting for this part."
+            "Raise a low-stock alert at or below this level, and suggested reorder quantity. "
+            "0 disables alerting for this part."
         )
 
         if editing:
@@ -212,7 +233,6 @@ class SparePartInventoryBulkEditForm(TagsBulkEditFormMixin, NautobotBulkEditForm
         widget=forms.MultipleHiddenInput,
     )
     minimum_quantity = forms.IntegerField(required=False, min_value=0)
-    reorder_quantity = forms.IntegerField(required=False, min_value=0)
     storage_location_detail = forms.CharField(max_length=100, required=False)
 
     class Meta:
@@ -296,6 +316,12 @@ class CheckOutForm(MovementForm):
         label="These units were reserved",
         help_text="Tick to take the units out of the reserved pool, releasing the reservation as you go.",
     )
+    failure_reason = forms.ChoiceField(
+        choices=add_blank_choice(FailureReasonChoices),
+        required=False,
+        label="Why did the old part fail?",
+        help_text="Optional, but this is the entire data source for vendor/model reliability reporting.",
+    )
     related_device = DynamicModelChoiceField(
         queryset=Device.objects.all(),
         required=False,
@@ -309,6 +335,18 @@ class CheckOutForm(MovementForm):
         help_text="Jira ticket reference (e.g. INFRA2-1234)",
     )
     notes = forms.CharField(widget=forms.Textarea(attrs={"rows": 3}), required=False)
+    component_slot = forms.CharField(
+        max_length=64,
+        required=False,
+        label="Component slot/name",
+        help_text="e.g. 'sdb' or 'DIMMD1' -- how this part shows up in the device's own Inventory items.",
+    )
+    component_serial = forms.CharField(
+        max_length=255,
+        required=False,
+        label="Component serial",
+        help_text="Serial of the unit actually being fitted.",
+    )
 
     def __init__(self, *args, inventory=None, **kwargs):
         super().__init__(*args, **kwargs)
@@ -363,6 +401,7 @@ class CheckOutForm(MovementForm):
                     f"{part_type} is not listed as compatible with {device.device_type}. "
                     "Add the device type to the part's compatibility list if this is correct.",
                 )
+        require_component_fields(self, cleaned, device=device, part_type=part_type)
         return cleaned
 
 
@@ -402,6 +441,12 @@ class DeviceCheckOutForm(MovementForm):
         label="These units were reserved",
         help_text="Tick if the stock was reserved for this work, so the reservation is released too.",
     )
+    failure_reason = forms.ChoiceField(
+        choices=add_blank_choice(FailureReasonChoices),
+        required=False,
+        label="Why did the old part fail?",
+        help_text="Optional, but this is the entire data source for vendor/model reliability reporting.",
+    )
     jira_ticket = forms.CharField(
         max_length=50,
         required=False,
@@ -409,6 +454,18 @@ class DeviceCheckOutForm(MovementForm):
         help_text="Jira ticket reference (e.g. INFRA2-1234)",
     )
     notes = forms.CharField(widget=forms.Textarea(attrs={"rows": 2}), required=False)
+    component_slot = forms.CharField(
+        max_length=64,
+        required=False,
+        label="Component slot/name",
+        help_text="e.g. 'sdb' or 'DIMMD1' -- how this part shows up in the device's own Inventory items.",
+    )
+    component_serial = forms.CharField(
+        max_length=255,
+        required=False,
+        label="Component serial",
+        help_text="Serial of the unit actually being fitted.",
+    )
 
     def __init__(self, *args, device=None, **kwargs):
         super().__init__(*args, **kwargs)
@@ -478,6 +535,9 @@ class DeviceCheckOutForm(MovementForm):
                 "quantity",
                 f"Only {inventory.quantity_available} unit(s) available at {inventory.location}.{hint}",
             )
+        require_component_fields(
+            self, cleaned, device=self.device, part_type=cleaned.get("spare_part_type") or inventory.spare_part_type
+        )
         return cleaned
 
     def clean_spare_part_type(self):

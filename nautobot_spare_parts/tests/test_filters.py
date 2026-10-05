@@ -41,6 +41,12 @@ class SparePartTypeFilterTestCase(TestCase):
     def test_search_ignores_whitespace(self):
         self.assertEqual(self.filter({"q": "   "}).count(), SparePartType.objects.count())
 
+    def test_search_matches_category_even_when_no_text_field_does(self):
+        """Searching what a part physically *is* should find it by category alone."""
+        widget = make_part_type(name="Widget 9000", category="fan", part_number="W-9000")
+        self.assertIn(widget, self.filter({"q": "fan"}))
+        self.assertNotIn(self.ram, self.filter({"q": "fan"}))
+
     def test_category_filter(self):
         results = self.filter({"category": ["psu"]})
         self.assertIn(self.psu, results)
@@ -128,6 +134,12 @@ class SparePartInventoryFilterTestCase(TestCase):
         record.storage_location_detail = "Cage B, shelf 7"
         record.save()
         self.assertIn(record, self.filter({"q": "shelf 7"}))
+
+    def test_search_matches_category_even_when_no_text_field_does(self):
+        """Searching what a part physically *is* should find it by category alone."""
+        widget = make_part_type(name="Widget 9000", category="fan", part_number="W-9000")
+        record = make_inventory(widget, self.dcim["location_a"], on_hand=1)
+        self.assertIn(record, self.filter({"q": "fan"}))
 
     def test_category_and_manufacturer_traverse_the_part_type(self):
         part = make_part_type(name="Traversed", category="nic", manufacturer=self.dcim["manufacturer"])

@@ -73,7 +73,7 @@ def make_part_type(name="Test RAM", **kwargs):
     return SparePartType.objects.create(name=name, **kwargs)
 
 
-def make_inventory(part_type, location, on_hand=10, reserved=0, minimum=0, reorder=0):
+def make_inventory(part_type, location, on_hand=10, reserved=0, minimum=0):
     """Create an inventory record with an exact opening state.
 
     Bypasses the opening-balance signal's transaction so tests start from a
@@ -85,7 +85,6 @@ def make_inventory(part_type, location, on_hand=10, reserved=0, minimum=0, reord
         quantity_on_hand=0,
         quantity_reserved=0,
         minimum_quantity=minimum,
-        reorder_quantity=reorder,
     )
     if on_hand:
         record.check_in(quantity=on_hand, reason="test setup")

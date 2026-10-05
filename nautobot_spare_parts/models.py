@@ -26,7 +26,7 @@ from nautobot.apps.models import BaseModel, PrimaryModel
 from nautobot.dcim.models import Device, DeviceType, Location, Manufacturer
 from nautobot.extras.utils import extras_features
 
-from nautobot_spare_parts.choices import SparePartCategoryChoices, SparePartTransactionTypeChoices
+from nautobot_spare_parts.choices import FailureReasonChoices, SparePartCategoryChoices, SparePartTransactionTypeChoices
 
 User = get_user_model()
 
@@ -85,6 +85,16 @@ class SparePartType(PrimaryModel):
         blank=True,
         help_text="Device types this part is compatible with",
     )
+
+    # name is not unique (two manufacturers' parts can share a display name),
+    # so without this Nautobot's generic importer (and anything else that
+    # resolves objects by natural key) can only find a SparePartType by UUID.
+    # (manufacturer, part_number) is the one combination that actually is
+    # unique -- see the UniqueConstraint below -- so that is what CSV import
+    # and similar tooling should key off of. Parts with no part_number set
+    # still have to be referenced by UUID; that constraint is conditional on
+    # part_number being non-blank, and a natural key has to always resolve.
+    natural_key_field_names = ["part_number", "manufacturer"]
 
     class Meta:
         """Meta class for SparePartType."""
@@ -187,7 +197,7 @@ class SparePartInventory(PrimaryModel):
     )
     reorder_quantity = models.PositiveIntegerField(
         default=0,
-        help_text="Suggested quantity to reorder when stock runs low",
+        help_text="Suggested quantity to reorder when stock runs low. Always kept equal to minimum_quantity.",
     )
     storage_location_detail = models.CharField(
         max_length=100,
@@ -248,11 +258,6 @@ class SparePartInventory(PrimaryModel):
         """
         return self.minimum_quantity > 0 and self.quantity_available <= self.minimum_quantity
 
-    @property
-    def needs_reorder(self):
-        """Low on stock and someone told us how many to buy."""
-        return self.is_low_stock and self.reorder_quantity > 0
-
     def clean(self):
         """Validate model data."""
         super().clean()
@@ -273,7 +278,12 @@ class SparePartInventory(PrimaryModel):
         catches every other route -- the edit form, a bulk edit, an API PATCH,
         a Job or an nbshell one-liner -- instead of letting the transaction log
         drift away from reality.
+
+        Also keeps ``reorder_quantity`` in lockstep with ``minimum_quantity``
+        -- they're the same number, so there's only one field for a person to
+        set.
         """
+        self.reorder_quantity = self.minimum_quantity
         if self.present_in_database and not getattr(self, "_movement_in_progress", False):
             previous = (
                 SparePartInventory.objects.filter(pk=self.pk).values("quantity_on_hand", "quantity_reserved").first()
@@ -304,6 +314,7 @@ class SparePartInventory(PrimaryModel):
         user=None,
         related_device=None,
         jira_ticket="",
+        failure_reason="",
         notes="",
         request_id=None,
         transfer_group=None,
@@ -336,6 +347,10 @@ class SparePartInventory(PrimaryModel):
             raise ValidationError("Only an allocation can increase the reserved quantity.")
         if not (reason or "").strip():
             raise ValidationError({"reason": "A reason is required so the audit trail stays useful."})
+        if failure_reason and transaction_type != SparePartTransactionTypeChoices.CHECK_OUT:
+            raise ValidationError(
+                {"failure_reason": "A failure reason only makes sense on a check-out -- it describes the old part."}
+            )
 
         with transaction.atomic():
             if request_id is not None:
@@ -388,6 +403,7 @@ class SparePartInventory(PrimaryModel):
                 reason=reason.strip(),
                 related_device=related_device,
                 jira_ticket=(jira_ticket or "").strip(),
+                failure_reason=failure_reason or "",
                 notes=notes or "",
                 request_id=request_id,
                 transfer_group=transfer_group,
@@ -484,7 +500,6 @@ class SparePartInventory(PrimaryModel):
                 location=destination_location,
                 defaults={
                     "minimum_quantity": 0,
-                    "reorder_quantity": 0,
                     "storage_location_detail": "",
                 },
             )
@@ -577,6 +592,14 @@ class SparePartTransaction(BaseModel):
         db_index=True,
         validators=[JIRA_TICKET_VALIDATOR],
         help_text="Jira ticket reference (e.g. INFRA2-1234)",
+    )
+    failure_reason = models.CharField(
+        max_length=50,
+        choices=FailureReasonChoices,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text="Why the old part was consumed/removed. Only meaningful on a check-out.",
     )
     transfer_group = models.UUIDField(
         blank=True,

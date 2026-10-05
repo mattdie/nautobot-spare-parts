@@ -33,6 +33,9 @@ nautobot = ">=3.0.0,<4.0.0"
 # Pure Python, no dependencies of its own. Only used to render the QR codes on
 # the printable shelf labels; the label sheet degrades to text without it.
 segno = "^1.6"
+# Already a transitive dependency of Nautobot itself, but declared explicitly
+# since this app now imports it directly (posting Job output to Zulip).
+requests = "^2.28"
 
 [tool.poetry.group.dev.dependencies]
 black = "^24.0"

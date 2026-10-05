@@ -1,0 +1,99 @@
+{% extends 'base.html' %}
+{% load humanize %}
+{% load spare_parts_helpers %}
+
+{% block title %}Spare Parts Cost{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-start mb-16">
+    <h1 class="mb-0">Cost</h1>
+    <a href="{% url 'plugins:nautobot_spare_parts:overview' %}" class="btn btn-outline-secondary">Back to overview</a>
+</div>
+<p class="text-body-secondary">
+    All figures are USD. Monthly spend applies each part type's <em>current</em> unit cost to past
+    check-outs, so it tracks spend trend, not a finance-grade historical reconciliation.
+</p>
+
+<table class="table table-sm w-auto mb-16">
+    <tbody>
+        <tr>
+            <th class="pe-16">Value on the shelf right now</th>
+            <td class="font-monospace text-end">{{ total_value|usd }}</td>
+            <th class="ps-16 pe-16">Spend, last {{ months_of_spend_history }} months</th>
+            <td class="font-monospace text-end">{{ total_spend|usd }}</td>
+        </tr>
+    </tbody>
+</table>
+
+<div class="row">
+    <div class="col-lg-4">
+        <div class="card">
+            <div class="card-header"><strong>Value by location</strong></div>
+            <table class="table table-sm table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Location</th>
+                        <th class="text-end">Value</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in by_location %}
+                    <tr>
+                        <td>{{ row.location__name|default:"—" }}</td>
+                        <td class="text-end font-monospace">{{ row.value|usd }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="col-lg-4">
+        <div class="card">
+            <div class="card-header"><strong>Value by category</strong></div>
+            <table class="table table-sm table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Category</th>
+                        <th class="text-end">Value</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in by_category %}
+                    <tr>
+                        <td>{{ category_labels|get_item:row.spare_part_type__category }}</td>
+                        <td class="text-end font-monospace">{{ row.value|usd }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="col-lg-4">
+        <div class="card">
+            <div class="card-header"><strong>Spend by month</strong></div>
+            {% if monthly_spend %}
+            <table class="table table-sm table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Month</th>
+                        <th class="text-end">Spend</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in monthly_spend %}
+                    <tr>
+                        <td>{{ row.month|date:"Y-m" }}</td>
+                        <td class="text-end font-monospace">{{ row.value|usd }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="card-body text-body-secondary">No check-outs in this window.</div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock content %}

@@ -138,10 +138,10 @@ class JobTestCase(TestCase):
     def test_low_stock_report(self):
         from nautobot_spare_parts.jobs import LowStockReport
 
-        make_inventory(self.part_type, self.dcim["location_a"], on_hand=1, minimum=5, reorder=10)
+        make_inventory(self.part_type, self.dcim["location_a"], on_hand=1, minimum=5)
         job = LowStockReport()
         job.logger = _CapturingLogger()
-        result = job.run(location=None, only_with_reorder_quantity=False)
+        result = job.run(location=None)
         self.assertIn("1 part(s)", result)
         self.assertTrue(any("short by 4" in message for message in job.logger.messages))
 
@@ -151,7 +151,7 @@ class JobTestCase(TestCase):
         make_inventory(self.part_type, self.dcim["location_b"], on_hand=50, minimum=5)
         job = LowStockReport()
         job.logger = _CapturingLogger()
-        self.assertEqual(job.run(location=None, only_with_reorder_quantity=False), "0 parts below minimum.")
+        self.assertEqual(job.run(location=None), "0 parts below minimum.")
 
     def test_stale_reservations_report(self):
         from nautobot_spare_parts.jobs import StaleReservationsReport
@@ -164,6 +164,47 @@ class JobTestCase(TestCase):
         result = job.run()
         self.assertIn("1 record(s)", result)
         self.assertTrue(any("INFRA2-9002" in message for message in job.logger.messages))
+
+    def test_low_stock_report_does_not_touch_zulip_by_default(self):
+        """notify_zulip defaults to False -- running the report plainly must never post anywhere."""
+        from unittest.mock import patch
+
+        from nautobot_spare_parts.jobs import LowStockReport
+
+        make_inventory(self.part_type, self.dcim["location_a"], on_hand=1, minimum=5)
+        job = LowStockReport()
+        job.logger = _CapturingLogger()
+        with patch("nautobot_spare_parts.zulip.requests.post") as mock_post:
+            job.run(location=None)
+        mock_post.assert_not_called()
+
+    def test_low_stock_report_can_opt_in_to_zulip(self):
+        from unittest.mock import patch
+
+        from nautobot_spare_parts.jobs import LowStockReport
+
+        make_inventory(self.part_type, self.dcim["location_a"], on_hand=1, minimum=5)
+        job = LowStockReport()
+        job.logger = _CapturingLogger()
+        with patch("nautobot_spare_parts.zulip.send_message", return_value=True) as mock_send:
+            job.run(location=None, notify_zulip=True)
+        mock_send.assert_called_once()
+        self.assertIn("Low Stock Report", mock_send.call_args[0][0])
+
+    def test_stale_reservations_report_can_opt_in_to_zulip(self):
+        from unittest.mock import patch
+
+        from nautobot_spare_parts.jobs import StaleReservationsReport
+
+        record = make_inventory(self.part_type, self.dcim["location_a"], on_hand=10)
+        record.allocate(quantity=3, reason="reserved and forgotten", jira_ticket="INFRA2-9002")
+
+        job = StaleReservationsReport()
+        job.logger = _CapturingLogger()
+        with patch("nautobot_spare_parts.zulip.send_message", return_value=True) as mock_send:
+            job.run(notify_zulip=True)
+        mock_send.assert_called_once()
+        self.assertIn("INFRA2-9002", mock_send.call_args[0][0])
 
 
 class _CapturingLogger:

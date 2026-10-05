@@ -18,6 +18,7 @@ movement as 400 with the reason -- never as a partially applied change.
 import logging
 
 from django.core.exceptions import ObjectDoesNotExist, PermissionDenied, ValidationError
+from django.db import transaction as db_transaction
 from drf_spectacular.utils import extend_schema
 from rest_framework import status
 from rest_framework.decorators import action
@@ -26,8 +27,9 @@ from rest_framework.response import Response
 from nautobot.apps.api import NautobotModelViewSet, ReadOnlyModelViewSet
 from nautobot.dcim.models import Device, Location
 
-from nautobot_spare_parts import filters
+from nautobot_spare_parts import components, filters
 from nautobot_spare_parts.api import serializers
+from nautobot_spare_parts.choices import SparePartCategoryChoices
 from nautobot_spare_parts.models import SparePartInventory, SparePartTransaction, SparePartType
 
 logger = logging.getLogger(__name__)
@@ -148,14 +150,31 @@ class SparePartInventoryViewSet(NautobotModelViewSet):
                     device = Device.objects.restrict(request.user, "view").get(pk=data["related_device"])
                 except Device.DoesNotExist:
                     raise ObjectDoesNotExist(f"No device with id {data['related_device']}.")
-            txn = inventory.check_out(
-                quantity=data["quantity"],
-                fulfil_reservation=data.get("fulfil_reservation", False),
-                user=request.user,
-                related_device=device,
-                jira_ticket=data.get("jira_ticket", ""),
-                **self._common(data),
-            )
+
+            part_type = inventory.spare_part_type
+            slot = (data.get("component_slot") or "").strip()
+            serial = (data.get("component_serial") or "").strip()
+            if device is not None and part_type.category in SparePartCategoryChoices.DEVICE_COMPONENT_CATEGORIES:
+                if not slot or not serial:
+                    raise ValidationError(
+                        f"component_slot and component_serial are both required for a "
+                        f"{part_type.get_category_display()} checked out against a device."
+                    )
+
+            with db_transaction.atomic():
+                txn = inventory.check_out(
+                    quantity=data["quantity"],
+                    fulfil_reservation=data.get("fulfil_reservation", False),
+                    user=request.user,
+                    related_device=device,
+                    jira_ticket=data.get("jira_ticket", ""),
+                    failure_reason=data.get("failure_reason", ""),
+                    **self._common(data),
+                )
+                if device is not None and slot:
+                    components.sync_device_component(
+                        device=device, spare_part_type=part_type, slot=slot, serial=serial
+                    )
             return txn, f"Checked out {data['quantity']} unit(s); {inventory.quantity_available} still available."
 
         return self._run(request, serializers.CheckOutSerializer, apply)

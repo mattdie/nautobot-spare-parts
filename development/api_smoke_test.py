@@ -164,7 +164,6 @@ else:
             "location": location_id,
             "quantity_on_hand": 10,
             "minimum_quantity": 4,
-            "reorder_quantity": 10,
             "storage_location_detail": "Smoke test shelf",
         },
     )

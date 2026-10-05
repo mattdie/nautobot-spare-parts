@@ -29,7 +29,7 @@ class SparePartAPITestCase(APITestCase):
         super().setUp()
         self.user.is_superuser = True
         self.user.save()
-        self.inventory = make_inventory(self.part_type, self.dcim["location_a"], on_hand=10, minimum=4, reorder=10)
+        self.inventory = make_inventory(self.part_type, self.dcim["location_a"], on_hand=10, minimum=4)
 
     def list_url(self, model):
         """Reverse an API list URL."""
@@ -70,7 +70,7 @@ class ReadTestCase(SparePartAPITestCase):
     def test_inventory_exposes_the_derived_fields(self):
         response = self.client.get(self.detail_url("sparepartinventory", self.inventory.pk), **self.header)
         self.assertHttpStatus(response, 200)
-        for field in ("quantity_available", "is_low_stock", "is_out_of_stock", "needs_reorder"):
+        for field in ("quantity_available", "is_low_stock", "is_out_of_stock"):
             self.assertIn(field, response.data, field)
 
     def test_search_filter(self):
@@ -210,6 +210,8 @@ class ActionTestCase(SparePartAPITestCase):
                 "reason": "fitted",
                 "related_device": str(self.dcim["device"].pk),
                 "jira_ticket": "INFRA2-1234",
+                "component_slot": "DIMMA1",
+                "component_serial": "SN123",
             },
         )
         self.assertHttpStatus(response, 200)
@@ -219,6 +221,31 @@ class ActionTestCase(SparePartAPITestCase):
     def test_check_out_with_an_unknown_device(self):
         response = self.post_action("check-out", {"quantity": 1, "reason": "x", "related_device": str(uuid.uuid4())})
         self.assertHttpStatus(response, 400)
+
+    def test_check_out_against_a_device_requires_component_fields(self):
+        response = self.post_action(
+            "check-out",
+            {"quantity": 1, "reason": "fitted", "related_device": str(self.dcim["device"].pk)},
+        )
+        self.assertHttpStatus(response, 400)
+
+    def test_check_out_against_a_device_creates_the_inventory_item(self):
+        from nautobot.dcim.models import InventoryItem
+
+        device = self.dcim["device"]
+        response = self.post_action(
+            "check-out",
+            {
+                "quantity": 1,
+                "reason": "fitted",
+                "related_device": str(device.pk),
+                "component_slot": "DIMMA1",
+                "component_serial": "SN123",
+            },
+        )
+        self.assertHttpStatus(response, 200)
+        item = InventoryItem.objects.get(device=device, name="DIMMA1")
+        self.assertEqual(item.serial, "SN123")
 
     def test_allocate_and_deallocate(self):
         response = self.post_action("allocate", {"quantity": 4, "reason": "planned work"})

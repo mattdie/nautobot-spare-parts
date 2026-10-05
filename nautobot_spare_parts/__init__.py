@@ -28,7 +28,15 @@ class NautobotSparePartsConfig(NautobotAppConfig):
     # markup, so claiming 2.x support would be claiming something untested.
     min_version = "3.0.0"
     max_version = "3.99"
-    default_settings = {}
+    default_settings = {
+        # An incoming-webhook URL. Blank means "do not post to Zulip" -- the
+        # jobs that can notify treat this as opt-in, never a silent default,
+        # because nobody wants a dev/test instance spamming a real channel
+        # because the setting happened to get copied over. The target
+        # stream/topic is fixed on the Zulip side by the webhook itself, not
+        # something configured here.
+        "zulip_webhook_url": "",
+    }
     # Puts these models in Nautobot's global search (the Cmd-K box), so looking
     # up a part number works the same way as looking up a device.
     searchable_models = ["spareparttype", "sparepartinventory"]

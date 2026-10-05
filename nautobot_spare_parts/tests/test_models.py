@@ -46,6 +46,18 @@ class MovementTestCase(TestCase):
         self.assertEqual(self.inventory.quantity_on_hand, 6)
         self.assertEqual(txn.quantity, -4)
 
+    def test_check_out_can_record_why_the_old_part_failed(self):
+        txn = self.inventory.check_out(quantity=1, reason="drive failed", failure_reason="doa")
+        self.assertEqual(txn.failure_reason, "doa")
+
+    def test_check_out_failure_reason_is_optional(self):
+        txn = self.inventory.check_out(quantity=1, reason="drive failed")
+        self.assertEqual(txn.failure_reason, "")
+
+    def test_failure_reason_is_refused_on_anything_but_check_out(self):
+        with self.assertRaises(ValidationError):
+            self.inventory.check_in(quantity=1, reason="delivery", failure_reason="doa")
+
     def test_adjust_accepts_both_directions(self):
         self.inventory.adjust(quantity=-2, reason="stock take")
         self.inventory.refresh_from_db()
@@ -348,7 +360,7 @@ class AuditTrailTestCase(TestCase):
 
 
 class DerivedStateTestCase(TestCase):
-    """quantity_available, is_low_stock, is_out_of_stock, needs_reorder."""
+    """quantity_available, is_low_stock, is_out_of_stock."""
 
     @classmethod
     def setUpTestData(cls):
@@ -373,11 +385,15 @@ class DerivedStateTestCase(TestCase):
     def test_low_stock_at_and_below_the_minimum(self):
         record = make_inventory(self.part_type, self.dcim["location_b"], on_hand=5, minimum=5)
         self.assertTrue(record.is_low_stock)
-        self.assertFalse(record.needs_reorder)
 
-        record.reorder_quantity = 10
+    def test_reorder_quantity_always_mirrors_minimum_quantity(self):
+        """There's only one threshold to set -- reorder_quantity just tracks it."""
+        record = make_inventory(self.part_type, self.dcim["location_a"], on_hand=10, minimum=5)
+        self.assertEqual(record.reorder_quantity, 5)
+
+        record.minimum_quantity = 8
         record.save()
-        self.assertTrue(record.needs_reorder)
+        self.assertEqual(record.reorder_quantity, 8)
 
     def test_reservations_count_towards_low_stock(self):
         record = make_inventory(self.part_type, self.dcim["location_a"], on_hand=10, reserved=8, minimum=4)
@@ -434,6 +450,20 @@ class ConstraintTestCase(TestCase):
         part = SparePartType(name="Cheap", category="psu", unit_cost=-1)
         with self.assertRaises(ValidationError):
             part.full_clean()
+
+    def test_natural_key_is_part_number_and_manufacturer_not_name(self):
+        """CSV import (and anything else resolving by natural key) has to be
+        able to find a part type without its UUID. Name cannot be the natural
+        key -- it is not unique -- but (manufacturer, part_number) is exactly
+        the combination the database constraint above already guarantees.
+        """
+        part = SparePartType.objects.create(
+            name="Natural Key Part", manufacturer=self.dcim["manufacturer"], part_number="NK-1", category="psu"
+        )
+        self.assertEqual(SparePartType.natural_key_field_names, ["part_number", "manufacturer"])
+        self.assertEqual(part.natural_key(), ["NK-1", str(self.dcim["manufacturer"])])
+        found = SparePartType.objects.get_by_natural_key("NK-1", self.dcim["manufacturer"])
+        self.assertEqual(found.pk, part.pk)
 
 
 class TransactionQueryTestCase(TestCase):

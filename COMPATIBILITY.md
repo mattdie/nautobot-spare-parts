@@ -4,7 +4,7 @@
 
 | Nautobot | Python | Status | How |
 |---|---|---|---|
-| 3.0.11 | 3.12 | Verified | Full test suite (121 tests) plus an end-to-end API smoke test, run in `networktocode/nautobot:3.0.11-py3.12` |
+| 3.0.11 | 3.12 | Verified | Full test suite (155 tests, 1 skipped) plus an end-to-end API smoke test (36 checks), run in `networktocode/nautobot:3.0.11-py3.12` |
 
 3.0.11 is the version running in the EEN test cluster, which is why it is the
 pinned target in `development/dev.env` and in CI.

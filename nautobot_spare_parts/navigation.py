@@ -46,6 +46,11 @@ menu_items = (
                         name="Low Stock",
                         permissions=[VIEW_INVENTORY],
                     ),
+                    NavMenuItem(
+                        link="plugins:nautobot_spare_parts:cost_dashboard",
+                        name="Cost (USD)",
+                        permissions=[VIEW_INVENTORY],
+                    ),
                 ),
             ),
             NavMenuGroup(

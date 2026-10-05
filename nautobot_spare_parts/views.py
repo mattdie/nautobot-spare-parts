@@ -20,7 +20,8 @@ from django.contrib import messages
 from django.core.exceptions import ValidationError
 from django.db import transaction as db_transaction
 from django.db.models import Count, DecimalField, ExpressionWrapper, F, Q, Sum, Value
-from django.db.models.functions import Coalesce
+from django.db.models.functions import Coalesce, TruncMonth
+from django.utils import timezone
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -40,7 +41,8 @@ from nautobot.dcim.models import Device
 from nautobot.dcim.tables import DeviceTypeTable
 from nautobot.core.views.paginator import EnhancedPaginator, get_paginate_count
 
-from nautobot_spare_parts import filters, forms, tables
+from nautobot_spare_parts import components, filters, forms, tables
+from nautobot_spare_parts.choices import SparePartCategoryChoices
 from nautobot_spare_parts.models import SparePartInventory, SparePartTransaction, SparePartType
 
 logger = logging.getLogger(__name__)
@@ -166,9 +168,7 @@ class SparePartInventoryUIViewSet(NautobotUIViewSet):
                     "quantity_reserved",
                     "quantity_available",
                     "minimum_quantity",
-                    "reorder_quantity",
                     "is_low_stock",
-                    "needs_reorder",
                     "notes",
                 ],
             ),
@@ -417,20 +417,33 @@ class CheckOutView(InventoryActionView):
     action = "Check Out"
 
     def perform(self, request, inventory, data):
-        """Record the check-out."""
-        inventory.check_out(
-            quantity=data["quantity"],
-            reason=data["reason"],
-            fulfil_reservation=data.get("fulfil_reservation", False),
-            user=request.user,
-            related_device=data.get("related_device"),
-            jira_ticket=data.get("jira_ticket", ""),
-            notes=data.get("notes", ""),
-            request_id=data.get("request_id"),
-        )
+        """Record the check-out, and the device's own component if this fits one."""
+        device = data.get("related_device")
+        with db_transaction.atomic():
+            inventory.check_out(
+                quantity=data["quantity"],
+                reason=data["reason"],
+                fulfil_reservation=data.get("fulfil_reservation", False),
+                user=request.user,
+                related_device=device,
+                jira_ticket=data.get("jira_ticket", ""),
+                failure_reason=data.get("failure_reason", ""),
+                notes=data.get("notes", ""),
+                request_id=data.get("request_id"),
+            )
+            component_note = ""
+            if device is not None and data.get("component_slot"):
+                components.sync_device_component(
+                    device=device,
+                    spare_part_type=inventory.spare_part_type,
+                    slot=data["component_slot"],
+                    serial=data["component_serial"],
+                )
+                component_note = f" Updated {device.name}'s {data['component_slot']} inventory item."
+
         return (
             f"Checked out {data['quantity']}x {inventory.spare_part_type} from {inventory.location}. "
-            f"{inventory.quantity_available} still available."
+            f"{inventory.quantity_available} still available.{component_note}"
         )
 
 
@@ -654,16 +667,25 @@ class DeviceCheckOutView(ObjectPermissionRequiredMixin, GenericView):
             data = form.cleaned_data
             inventory = data["inventory"]
             try:
-                inventory.check_out(
-                    quantity=data["quantity"],
-                    reason=data["reason"],
-                    fulfil_reservation=data.get("fulfil_reservation", False),
-                    user=request.user,
-                    related_device=device,
-                    jira_ticket=data.get("jira_ticket", ""),
-                    notes=data.get("notes", ""),
-                    request_id=data.get("request_id"),
-                )
+                with db_transaction.atomic():
+                    inventory.check_out(
+                        quantity=data["quantity"],
+                        reason=data["reason"],
+                        fulfil_reservation=data.get("fulfil_reservation", False),
+                        user=request.user,
+                        related_device=device,
+                        jira_ticket=data.get("jira_ticket", ""),
+                        failure_reason=data.get("failure_reason", ""),
+                        notes=data.get("notes", ""),
+                        request_id=data.get("request_id"),
+                    )
+                    if data.get("component_slot"):
+                        components.sync_device_component(
+                            device=device,
+                            spare_part_type=inventory.spare_part_type,
+                            slot=data["component_slot"],
+                            serial=data["component_serial"],
+                        )
             except ValidationError as exc:
                 for text in exc.messages:
                     messages.error(request, text)
@@ -801,7 +823,6 @@ class LowStockDashboardView(ObjectPermissionRequiredMixin, GenericView):
             {
                 "table": table,
                 "low_stock_count": queryset.count(),
-                "reorder_count": queryset.filter(reorder_quantity__gt=0).count(),
             },
         )
 
@@ -859,6 +880,102 @@ class InventoryOverviewView(ObjectPermissionRequiredMixin, GenericView):
         )
 
 
+class CostDashboardView(ObjectPermissionRequiredMixin, GenericView):
+    """Where the money is: value on the shelf, and what got spent getting there.
+
+    Every figure here is USD -- there is exactly one currency in this app,
+    ``unit_cost`` has no currency field next to it, and the ``usd`` template
+    filter is what makes that explicit on screen instead of implicit in the
+    code. Monthly spend applies each part type's *current* unit_cost to past
+    check-outs; it does not track what a part cost on the day it was actually
+    bought, so a recent price change shifts the whole trend line, not just
+    the months after the change. Good enough for "is spend going up," not
+    for a finance reconciliation.
+    """
+
+    queryset = SparePartInventory.objects.all()
+    template_name = "nautobot_spare_parts/cost_dashboard.html"
+    months_of_spend_history = 12
+
+    def get_required_permission(self):
+        """Read-only view."""
+        return VIEW_INVENTORY
+
+    @staticmethod
+    def _value_expression():
+        """quantity * unit_cost, as a Decimal, for whichever quantity field is being summed."""
+        return ExpressionWrapper(
+            F("quantity_on_hand") * F("spare_part_type__unit_cost"),
+            output_field=DecimalField(max_digits=16, decimal_places=2),
+        )
+
+    def get(self, request):
+        """Render the cost dashboard."""
+        inventory = SparePartInventory.objects.restrict(request.user, "view").select_related(
+            "spare_part_type", "location"
+        )
+
+        zero = Value(0, output_field=DecimalField(max_digits=16, decimal_places=2))
+
+        by_location = (
+            inventory.values("location__name")
+            .annotate(value=Coalesce(Sum(self._value_expression()), zero))
+            .order_by("-value")
+        )
+        by_category = (
+            inventory.values("spare_part_type__category")
+            .annotate(value=Coalesce(Sum(self._value_expression()), zero))
+            .order_by("-value")
+        )
+        total_value = inventory.aggregate(value=Coalesce(Sum(self._value_expression()), zero))["value"]
+
+        since = timezone.now() - timezone.timedelta(days=30 * self.months_of_spend_history)
+        checkouts = SparePartTransaction.objects.restrict(request.user, "view").filter(
+            transaction_type="check_out", timestamp__gte=since
+        )
+        monthly_spend = (
+            checkouts.annotate(month=TruncMonth("timestamp"))
+            .values("month")
+            .annotate(
+                value=Coalesce(
+                    Sum(
+                        ExpressionWrapper(
+                            -F("quantity") * F("spare_part_inventory__spare_part_type__unit_cost"),
+                            output_field=DecimalField(max_digits=16, decimal_places=2),
+                        )
+                    ),
+                    zero,
+                )
+            )
+            .order_by("month")
+        )
+        total_spend = checkouts.aggregate(
+            value=Coalesce(
+                Sum(
+                    ExpressionWrapper(
+                        -F("quantity") * F("spare_part_inventory__spare_part_type__unit_cost"),
+                        output_field=DecimalField(max_digits=16, decimal_places=2),
+                    )
+                ),
+                zero,
+            )
+        )["value"]
+
+        return render(
+            request,
+            self.template_name,
+            {
+                "total_value": total_value,
+                "total_spend": total_spend,
+                "months_of_spend_history": self.months_of_spend_history,
+                "by_location": by_location,
+                "by_category": by_category,
+                "category_labels": dict(SparePartCategoryChoices.CHOICES),
+                "monthly_spend": monthly_spend,
+            },
+        )
+
+
 class InventoryCSVExportView(ObjectPermissionRequiredMixin, GenericView):
     """Flat CSV of current stock -- the format people actually paste into sheets."""
 
@@ -894,7 +1011,6 @@ class InventoryCSVExportView(ObjectPermissionRequiredMixin, GenericView):
                 "reserved",
                 "available",
                 "minimum",
-                "reorder_quantity",
                 "low_stock",
                 "unit_cost",
             ]
@@ -913,7 +1029,6 @@ class InventoryCSVExportView(ObjectPermissionRequiredMixin, GenericView):
                     record.quantity_reserved,
                     record.quantity_available,
                     record.minimum_quantity,
-                    record.reorder_quantity,
                     "yes" if record.is_low_stock else "no",
                     part.unit_cost if part.unit_cost is not None else "",
                 ]

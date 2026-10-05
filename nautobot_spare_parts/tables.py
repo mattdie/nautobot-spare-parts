@@ -4,7 +4,7 @@ import django_tables2 as tables
 from django.urls import reverse
 from django.utils.html import format_html
 
-from nautobot.apps.tables import BaseTable, BooleanColumn, ButtonsColumn, TagColumn, ToggleColumn
+from nautobot.apps.tables import BaseTable, ButtonsColumn, TagColumn, ToggleColumn
 
 from nautobot_spare_parts.models import SparePartInventory, SparePartTransaction, SparePartType
 
@@ -63,11 +63,27 @@ class SparePartInventoryTable(BaseTable):
     # The Low Stock column already says whether this number is a problem, so it
     # does not need colouring too.
     available = tables.Column(verbose_name="Available", orderable=True)
-    minimum_quantity = tables.Column(verbose_name="Min")
-    reorder_quantity = tables.Column(verbose_name="Reorder")
-    is_low_stock = BooleanColumn(accessor="is_low_stock", verbose_name="Low Stock", orderable=False)
+    minimum_quantity = tables.Column(verbose_name="Min / Reorder Qty")
+    # Not a plain BooleanColumn: is_low_stock is a warning flag, where True is
+    # the bad state. Nautobot's BooleanColumn always renders True as a green
+    # check ("Yes") and False as a red X ("No"), which would show a reassuring
+    # green check on shelves that are actually low. render_is_low_stock below
+    # flips the colouring so red/warning means "yes, this is low."
+    is_low_stock = tables.Column(accessor="is_low_stock", verbose_name="Low Stock", orderable=False)
     tags = TagColumn(url_name="plugins:nautobot_spare_parts:sparepartinventory_list")
     actions = ButtonsColumn(SparePartInventory)
+
+    def render_is_low_stock(self, value):
+        """Render the low-stock flag with warning-appropriate colouring.
+
+        Unlike a plain yes/no flag, True here means "needs attention" and
+        should read as an alert, not a reassuring green check.
+        """
+        if value:
+            return format_html(
+                '<span class="text-danger"><i class="mdi mdi-alert-circle" title="Low stock"></i></span>'
+            )
+        return format_html('<span class="text-success"><i class="mdi mdi-check-bold" title="OK"></i></span>')
 
     class Meta(BaseTable.Meta):
         """Meta class for SparePartInventoryTable."""
@@ -82,7 +98,6 @@ class SparePartInventoryTable(BaseTable):
             "quantity_reserved",
             "available",
             "minimum_quantity",
-            "reorder_quantity",
             "is_low_stock",
             "tags",
             "actions",
@@ -140,6 +155,7 @@ class SparePartTransactionTable(BaseTable):
     reason = tables.Column(orderable=False)
     related_device = tables.Column(linkify=True, verbose_name="Device")
     jira_ticket = tables.Column(verbose_name="Jira")
+    failure_reason = tables.Column(verbose_name="Failure Reason")
 
     class Meta(BaseTable.Meta):
         """Meta class for SparePartTransactionTable."""
@@ -157,6 +173,7 @@ class SparePartTransactionTable(BaseTable):
             "reason",
             "related_device",
             "jira_ticket",
+            "failure_reason",
         )
         default_columns = (
             "timestamp",
@@ -168,6 +185,7 @@ class SparePartTransactionTable(BaseTable):
             "user",
             "reason",
             "jira_ticket",
+            "failure_reason",
         )
 
     def render_jira_ticket(self, value):
@@ -187,8 +205,6 @@ class LowStockTable(BaseTable):
     available = tables.Column(verbose_name="Available")
     minimum_quantity = tables.Column(verbose_name="Min")
     shortfall = tables.Column(accessor="pk", verbose_name="Short By", orderable=False)
-    reorder_quantity = tables.Column(verbose_name="Reorder Qty")
-    needs_reorder = BooleanColumn(accessor="needs_reorder", verbose_name="Reorder Set", orderable=False)
     actions = ButtonsColumn(SparePartInventory, buttons=("edit",))
 
     class Meta(BaseTable.Meta):
@@ -202,8 +218,6 @@ class LowStockTable(BaseTable):
             "available",
             "minimum_quantity",
             "shortfall",
-            "reorder_quantity",
-            "needs_reorder",
             "actions",
         )
         default_columns = (
@@ -212,8 +226,6 @@ class LowStockTable(BaseTable):
             "available",
             "minimum_quantity",
             "shortfall",
-            "reorder_quantity",
-            "needs_reorder",
             "actions",
         )
 

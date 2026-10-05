@@ -6,8 +6,21 @@ from django.db.models import F, Q
 from nautobot.apps.filters import NautobotFilterSet
 from nautobot.dcim.models import Device, DeviceType, Location, Manufacturer
 
-from nautobot_spare_parts.choices import SparePartCategoryChoices, SparePartTransactionTypeChoices
+from nautobot_spare_parts.choices import FailureReasonChoices, SparePartCategoryChoices, SparePartTransactionTypeChoices
 from nautobot_spare_parts.models import SparePartInventory, SparePartTransaction, SparePartType
+
+
+def matching_category_keys(value):
+    """Category choice keys whose label or stored key contains ``value``.
+
+    Lets free-text search find parts by what they physically are ("cable",
+    "power supply") without the searcher needing to know the exact category
+    label or dropdown value. Category is stored as a short key (``psu``) but
+    displayed as a label ("PSU") that can differ a lot from the key, so both
+    are checked.
+    """
+    value = value.lower()
+    return [key for key, label in SparePartCategoryChoices.CHOICES if value in key.lower() or value in label.lower()]
 
 
 def locations_in_datacenter_of(device):
@@ -57,15 +70,24 @@ class SparePartTypeFilterSet(NautobotFilterSet):
         fields = ["id", "name", "manufacturer", "part_number", "category", "unit_cost"]
 
     def search(self, queryset, name, value):
-        """Search name, part number, description and manufacturer."""
+        """Search name, part number, description, manufacturer and category.
+
+        Category is included so that searching for what a part physically
+        *is* -- "cable", "power supply" -- finds it even when that word
+        appears in none of the part's own text fields.
+        """
         if not value.strip():
             return queryset
-        return queryset.filter(
+        q = (
             Q(name__icontains=value)
             | Q(part_number__icontains=value)
             | Q(description__icontains=value)
             | Q(manufacturer__name__icontains=value)
         )
+        categories = matching_category_keys(value)
+        if categories:
+            q |= Q(category__in=categories)
+        return queryset.filter(q)
 
     def filter_has_stock(self, queryset, name, value):
         """Restrict to part types that are (or are not) held anywhere."""
@@ -128,21 +150,29 @@ class SparePartInventoryFilterSet(NautobotFilterSet):
             "quantity_on_hand",
             "quantity_reserved",
             "minimum_quantity",
-            "reorder_quantity",
             "storage_location_detail",
         ]
 
     def search(self, queryset, name, value):
-        """Search part name/number, location and storage detail."""
+        """Search part name/number, location, storage detail and category.
+
+        Category is included so that searching for what a part physically
+        *is* -- "cable", "power supply" -- finds it even when that word
+        appears in none of the part's own text fields.
+        """
         if not value.strip():
             return queryset
-        return queryset.filter(
+        q = (
             Q(spare_part_type__name__icontains=value)
             | Q(spare_part_type__part_number__icontains=value)
             | Q(spare_part_type__manufacturer__name__icontains=value)
             | Q(location__name__icontains=value)
             | Q(storage_location_detail__icontains=value)
         )
+        categories = matching_category_keys(value)
+        if categories:
+            q |= Q(spare_part_type__category__in=categories)
+        return queryset.filter(q)
 
     @staticmethod
     def low_stock_q():
@@ -214,6 +244,10 @@ class SparePartTransactionFilterSet(NautobotFilterSet):
     )
     timestamp = django_filters.DateTimeFromToRangeFilter(label="Timestamp")
     jira_ticket = django_filters.CharFilter(lookup_expr="iexact", label="Jira ticket")
+    failure_reason = django_filters.MultipleChoiceFilter(
+        choices=FailureReasonChoices,
+        label="Failure Reason",
+    )
 
     class Meta:
         """Meta class for SparePartTransactionFilterSet."""
@@ -230,13 +264,17 @@ class SparePartTransactionFilterSet(NautobotFilterSet):
         ]
 
     def search(self, queryset, name, value):
-        """Search part name, location, reason, notes and Jira ticket."""
+        """Search part name, location, reason, notes, Jira ticket and category."""
         if not value.strip():
             return queryset
-        return queryset.filter(
+        q = (
             Q(spare_part_inventory__spare_part_type__name__icontains=value)
             | Q(spare_part_inventory__location__name__icontains=value)
             | Q(reason__icontains=value)
             | Q(notes__icontains=value)
             | Q(jira_ticket__icontains=value)
         )
+        categories = matching_category_keys(value)
+        if categories:
+            q |= Q(spare_part_inventory__spare_part_type__category__in=categories)
+        return queryset.filter(q)

@@ -51,6 +51,39 @@ class SparePartCategoryChoices(ChoiceSet):
         (OTHER, "Other"),
     )
 
+    #: Categories that physically live inside a device, as opposed to
+    #: interconnects (cables, transceivers) that are consumed but never show
+    #: up as one of the device's own components. Checking one of these out
+    #: against a device creates/replaces a matching Nautobot InventoryItem.
+    DEVICE_COMPONENT_CATEGORIES = frozenset(
+        {RAM, DIMM, PSU, HDD, SSD, NVME, NIC, FAN, MOTHERBOARD, CPU, GPU, RAID_CARD, RISER}
+    )
+
+
+class FailureReasonChoices(ChoiceSet):
+    """Why the old part was consumed/removed, captured on check-out.
+
+    Optional on every check-out, but cheap to ask for and the entire value of
+    the vendor/model reliability analysis downstream depends on it being
+    there -- a check-out with no failure reason is a data gap, not a feature.
+    """
+
+    DOA = "doa"
+    WEAR = "wear"
+    PHYSICAL_DAMAGE = "physical_damage"
+    PROACTIVE = "proactive"
+    UNKNOWN = "unknown"
+    OTHER = "other"
+
+    CHOICES = (
+        (DOA, "Dead on arrival"),
+        (WEAR, "Wear / age"),
+        (PHYSICAL_DAMAGE, "Physical damage"),
+        (PROACTIVE, "Proactive replacement (not a failure)"),
+        (UNKNOWN, "Unknown"),
+        (OTHER, "Other"),
+    )
+
 
 class SparePartTransactionTypeChoices(ChoiceSet):
     """Kind of stock movement recorded in the audit trail.

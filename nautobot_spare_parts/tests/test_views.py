@@ -24,7 +24,7 @@ class ViewTestCaseBase(TestCase):
 
     def setUp(self):
         super().setUp()
-        self.inventory = make_inventory(self.part_type, self.dcim["location_a"], on_hand=10, minimum=4, reorder=10)
+        self.inventory = make_inventory(self.part_type, self.dcim["location_a"], on_hand=10, minimum=4)
         self.user.is_superuser = True
         self.user.save()
 
@@ -40,6 +40,7 @@ class PageLoadTestCase(ViewTestCaseBase):
         pages = [
             ("overview",),
             ("low_stock_dashboard",),
+            ("cost_dashboard",),
             ("inventory_csv_export",),
             ("spareparttype_list",),
             ("sparepartinventory_list",),
@@ -87,6 +88,21 @@ class PageLoadTestCase(ViewTestCaseBase):
         make_inventory(unmanaged_type, self.dcim["location_b"], on_hand=0, minimum=0)
         response = self.client.get(self.url("low_stock_dashboard"))
         self.assertNotContains(response, "Unmanaged cable")
+
+    def test_cost_dashboard_shows_value_in_usd(self):
+        """unit_cost is set on the fixture part type; on_hand=10 at setUp."""
+        self.part_type.unit_cost = 25
+        self.part_type.save()
+        response = self.client.get(self.url("cost_dashboard"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "$250.00")
+
+    def test_cost_dashboard_counts_checkout_value_as_spend(self):
+        self.part_type.unit_cost = 10
+        self.part_type.save()
+        self.inventory.check_out(quantity=3, reason="fitted to a node")
+        response = self.client.get(self.url("cost_dashboard"))
+        self.assertContains(response, "$30.00")
 
     def test_csv_export_has_a_row_per_record(self):
         response = self.client.get(self.url("inventory_csv_export"))
@@ -177,9 +193,86 @@ class ActionViewTestCase(ViewTestCaseBase):
         self.part_type.compatible_device_types.add(self.dcim["device_type"])
         response = self.client.post(
             self.url("sparepartinventory_checkout", self.inventory.pk),
-            {"quantity": 1, "reason": "right hardware", "related_device": str(self.dcim["device"].pk)},
+            {
+                "quantity": 1,
+                "reason": "right hardware",
+                "related_device": str(self.dcim["device"].pk),
+                "component_slot": "DIMMA1",
+                "component_serial": "SN123",
+            },
         )
         self.assertEqual(response.status_code, 302)
+
+    def test_check_out_against_a_device_requires_component_fields(self):
+        """A device component category needs to say which slot and what serial."""
+        response = self.client.post(
+            self.url("sparepartinventory_checkout", self.inventory.pk),
+            {"quantity": 1, "reason": "fitted", "related_device": str(self.dcim["device"].pk)},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Required for a RAM")
+        self.inventory.refresh_from_db()
+        self.assertEqual(self.inventory.quantity_on_hand, 10)
+
+    def test_check_out_without_a_device_does_not_require_component_fields(self):
+        """No device means nothing to fit it into -- ordinary shelf consumption."""
+        response = self.client.post(
+            self.url("sparepartinventory_checkout", self.inventory.pk),
+            {"quantity": 1, "reason": "consumed, not fitted"},
+        )
+        self.assertEqual(response.status_code, 302)
+
+    def test_check_out_against_a_device_creates_the_inventory_item(self):
+        from nautobot.dcim.models import InventoryItem
+
+        device = self.dcim["device"]
+        response = self.client.post(
+            self.url("sparepartinventory_checkout", self.inventory.pk),
+            {
+                "quantity": 1,
+                "reason": "fitted",
+                "related_device": str(device.pk),
+                "component_slot": "DIMMA1",
+                "component_serial": "SN123",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        item = InventoryItem.objects.get(device=device, name="DIMMA1")
+        self.assertEqual(item.serial, "SN123")
+        self.assertEqual(item.label, "RAM")
+
+    def test_check_out_against_a_device_replaces_the_existing_component(self):
+        """The same slot checked out twice swaps the item, it does not double up."""
+        from nautobot.dcim.models import InventoryItem
+
+        device = self.dcim["device"]
+        for serial in ("SN-OLD", "SN-NEW"):
+            self.client.post(
+                self.url("sparepartinventory_checkout", self.inventory.pk),
+                {
+                    "quantity": 1,
+                    "reason": "fitted",
+                    "related_device": str(device.pk),
+                    "component_slot": "DIMMA1",
+                    "component_serial": serial,
+                },
+            )
+        self.assertEqual(InventoryItem.objects.filter(device=device, name="DIMMA1").count(), 1)
+        self.assertEqual(InventoryItem.objects.get(device=device, name="DIMMA1").serial, "SN-NEW")
+
+    def test_check_out_a_non_component_category_against_a_device_skips_the_item(self):
+        """Cables and transceivers are consumed, not tracked as a device component."""
+        from nautobot.dcim.models import InventoryItem
+
+        cable_type = make_part_type(name="Test Cable", category="cable")
+        cable_inventory = make_inventory(cable_type, self.dcim["location_a"], on_hand=5)
+        device = self.dcim["device"]
+        response = self.client.post(
+            self.url("sparepartinventory_checkout", cable_inventory.pk),
+            {"quantity": 1, "reason": "ran a new link", "related_device": str(device.pk)},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(InventoryItem.objects.filter(device=device).exists())
 
     def test_allocate_and_deallocate(self):
         self.client.post(
@@ -385,6 +478,8 @@ class DeviceCheckOutTestCase(ViewTestCaseBase):
                 "quantity": 2,
                 "reason": "Two drives failing SMART",
                 "jira_ticket": "INFRA2-5130",
+                "component_slot": "DIMMA1",
+                "component_serial": "SN123",
             },
         )
         self.assertEqual(response.status_code, 302)
@@ -395,6 +490,39 @@ class DeviceCheckOutTestCase(ViewTestCaseBase):
         self.assertEqual(txn.related_device, self.dcim["device"])
         self.assertEqual(txn.jira_ticket, "INFRA2-5130")
         self.assertEqual(txn.transaction_type, "check_out")
+
+    def test_taking_a_part_requires_component_fields(self):
+        response = self.client.post(
+            self.url_for(self.dcim["device"]),
+            {
+                "spare_part_type": str(self.part_type.pk),
+                "inventory": str(self.inventory.pk),
+                "quantity": 1,
+                "reason": "fitted",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Required for a RAM")
+        self.inventory.refresh_from_db()
+        self.assertEqual(self.inventory.quantity_on_hand, 10)
+
+    def test_taking_a_part_creates_the_inventory_item_on_the_device(self):
+        from nautobot.dcim.models import InventoryItem
+
+        device = self.dcim["device"]
+        self.client.post(
+            self.url_for(device),
+            {
+                "spare_part_type": str(self.part_type.pk),
+                "inventory": str(self.inventory.pk),
+                "quantity": 1,
+                "reason": "fitted",
+                "component_slot": "DIMMA1",
+                "component_serial": "SN123",
+            },
+        )
+        item = InventoryItem.objects.get(device=device, name="DIMMA1")
+        self.assertEqual(item.serial, "SN123")
 
     def test_over_taking_shows_a_form_error_and_changes_nothing(self):
         response = self.client.post(
@@ -421,6 +549,8 @@ class DeviceCheckOutTestCase(ViewTestCaseBase):
                 "quantity": 2,
                 "reason": "fitted the reserved units",
                 "fulfil_reservation": "on",
+                "component_slot": "DIMMA1",
+                "component_serial": "SN123",
             },
         )
         self.assertEqual(response.status_code, 302)

@@ -110,32 +110,31 @@ for name, manufacturer, part_number, category, cost, description in catalogue:
 
 # --- stock -------------------------------------------------------------------
 
-# (part, location, on_hand, minimum, reorder, storage detail)
+# (part, location, on_hand, minimum, storage detail)
 stock = [
-    ("32GB DDR4-2666 ECC RDIMM", "AUS1", 24, 8, 16, "Spares cage A, shelf 2, bin 4"),
-    ("64GB DDR4-3200 ECC RDIMM", "AUS1", 6, 6, 12, "Spares cage A, shelf 2, bin 5"),
-    ("8TB SATA 7.2k 3.5in", "AUS1", 14, 10, 20, "Spares cage A, shelf 4"),
-    ("960GB SATA SSD", "AUS1", 9, 4, 10, "Spares cage A, shelf 3"),
-    ("X710-DA2 10G SFP+ NIC", "AUS1", 3, 2, 4, "Spares cage B, shelf 1"),
-    ("10G SFP+ SR transceiver", "AUS1", 40, 20, 40, "Spares cage B, drawer 2"),
-    ("1000W redundant PSU", "AUS1", 5, 4, 6, "Spares cage B, shelf 2"),
-    ("80mm chassis fan", "AUS1", 2, 6, 12, "Spares cage B, drawer 3"),
-    ("SFP+ DAC 2m", "AUS1", 18, 0, 0, "Spares cage B, drawer 4"),
-    ("LC-LC OM4 fibre 3m", "AUS1", 30, 10, 25, "Spares cage B, drawer 5"),
-    ("32GB DDR4-2666 ECC RDIMM", "FRA1", 8, 8, 16, "Spares rack 12, shelf 1"),
-    ("8TB SATA 7.2k 3.5in", "FRA1", 4, 6, 12, "Spares rack 12, shelf 2"),
-    ("1000W redundant PSU", "FRA1", 1, 2, 4, "Spares rack 12, shelf 3"),
+    ("32GB DDR4-2666 ECC RDIMM", "AUS1", 24, 8, "Spares cage A, shelf 2, bin 4"),
+    ("64GB DDR4-3200 ECC RDIMM", "AUS1", 6, 6, "Spares cage A, shelf 2, bin 5"),
+    ("8TB SATA 7.2k 3.5in", "AUS1", 14, 10, "Spares cage A, shelf 4"),
+    ("960GB SATA SSD", "AUS1", 9, 4, "Spares cage A, shelf 3"),
+    ("X710-DA2 10G SFP+ NIC", "AUS1", 3, 2, "Spares cage B, shelf 1"),
+    ("10G SFP+ SR transceiver", "AUS1", 40, 20, "Spares cage B, drawer 2"),
+    ("1000W redundant PSU", "AUS1", 5, 4, "Spares cage B, shelf 2"),
+    ("80mm chassis fan", "AUS1", 2, 6, "Spares cage B, drawer 3"),
+    ("SFP+ DAC 2m", "AUS1", 18, 0, "Spares cage B, drawer 4"),
+    ("LC-LC OM4 fibre 3m", "AUS1", 30, 10, "Spares cage B, drawer 5"),
+    ("32GB DDR4-2666 ECC RDIMM", "FRA1", 8, 8, "Spares rack 12, shelf 1"),
+    ("8TB SATA 7.2k 3.5in", "FRA1", 4, 6, "Spares rack 12, shelf 2"),
+    ("1000W redundant PSU", "FRA1", 1, 2, "Spares rack 12, shelf 3"),
 ]
 
 records = {}
-for part_name, room_name, on_hand, minimum, reorder, detail in stock:
+for part_name, room_name, on_hand, minimum, detail in stock:
     record, created = SparePartInventory.objects.get_or_create(
         spare_part_type=types[part_name],
         location=store_rooms[room_name],
         defaults={
             "quantity_on_hand": on_hand,
             "minimum_quantity": minimum,
-            "reorder_quantity": reorder,
             "storage_location_detail": detail,
         },
     )

@@ -17,6 +17,7 @@ router.register("spare-part-transactions", views.SparePartTransactionUIViewSet)
 urlpatterns = [
     path("", views.InventoryOverviewView.as_view(), name="overview"),
     path("low-stock/", views.LowStockDashboardView.as_view(), name="low_stock_dashboard"),
+    path("cost/", views.CostDashboardView.as_view(), name="cost_dashboard"),
     path("export/inventory.csv", views.InventoryCSVExportView.as_view(), name="inventory_csv_export"),
     path("jira/<str:ticket>/", views.JiraTicketPartsView.as_view(), name="jira_ticket_parts"),
     path("labels/", views.BinLabelsView.as_view(), name="bin_labels"),
