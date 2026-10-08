@@ -56,7 +56,9 @@ class SparePartInventoryTable(BaseTable):
 
     pk = ToggleColumn()
     location = tables.Column(linkify=True)
-    spare_part_type = tables.Column(linkify=True, verbose_name="Part Type")
+    # Links to this stock record, not the part type: Check In / Check Out live on
+    # the record's page, the part type page spans every location.
+    spare_part_type = tables.Column(linkify=lambda record: record.get_absolute_url(), verbose_name="Part Type")
     storage_location_detail = tables.Column(verbose_name="Storage Detail")
     quantity_on_hand = tables.Column(verbose_name="On Hand")
     quantity_reserved = tables.Column(verbose_name="Reserved")
@@ -118,7 +120,8 @@ class SparePartInventoryTable(BaseTable):
 class SparePartTypeInventoryTable(BaseTable):
     """Where one part type is stocked -- embedded on the part type page."""
 
-    location = tables.Column(linkify=True)
+    # Links to the stock record so Check In / Check Out is one click away.
+    location = tables.Column(linkify=lambda record: record.get_absolute_url())
     storage_location_detail = tables.Column(verbose_name="Storage Detail")
     quantity_on_hand = tables.Column(verbose_name="On Hand")
     quantity_reserved = tables.Column(verbose_name="Reserved")
