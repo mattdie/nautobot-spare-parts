@@ -161,9 +161,54 @@ class JobTestCase(TestCase):
 
         job = StaleReservationsReport()
         job.logger = _CapturingLogger()
-        result = job.run()
-        self.assertIn("1 record(s)", result)
+        result = job.run(older_than_days=0)
+        self.assertIn("1 stale reservation(s)", result)
         self.assertTrue(any("INFRA2-9002" in message for message in job.logger.messages))
+
+    def test_stale_reservations_report_skips_recent_reservations(self):
+        from nautobot_spare_parts.jobs import StaleReservationsReport
+
+        record = make_inventory(self.part_type, self.dcim["location_a"], on_hand=10)
+        record.allocate(quantity=3, reason="for tomorrow", jira_ticket="INFRA2-9003")
+
+        job = StaleReservationsReport()
+        job.logger = _CapturingLogger()
+        self.assertEqual(job.run(older_than_days=14), "0 stale reservations.")
+
+    def test_stale_reservations_report_reports_old_reservations(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from nautobot_spare_parts.jobs import StaleReservationsReport
+        from nautobot_spare_parts.models import SparePartTransaction
+
+        record = make_inventory(self.part_type, self.dcim["location_a"], on_hand=10)
+        txn = record.allocate(quantity=3, reason="long ago", jira_ticket="INFRA2-9004")
+        # timestamp is auto_now_add and the model refuses edits; age it in SQL.
+        SparePartTransaction.objects.filter(pk=txn.pk).update(timestamp=timezone.now() - timedelta(days=30))
+
+        job = StaleReservationsReport()
+        job.logger = _CapturingLogger()
+        self.assertEqual(job.run(older_than_days=14), "1 stale reservation(s).")
+
+    def test_stale_reservations_report_only_names_tickets_still_holding_stock(self):
+        from nautobot_spare_parts.jobs import StaleReservationsReport
+
+        record = make_inventory(self.part_type, self.dcim["location_a"], on_hand=10)
+        record.allocate(quantity=2, reason="still open", jira_ticket="INFRA2-9005")
+        record.allocate(quantity=2, reason="released", jira_ticket="INFRA2-9006")
+        record.deallocate(quantity=2, reason="job cancelled", jira_ticket="INFRA2-9006")
+        record.allocate(quantity=1, reason="fitted", jira_ticket="INFRA2-9007")
+        record.check_out(quantity=1, reason="fitted", fulfil_reservation=True, jira_ticket="INFRA2-9007")
+
+        job = StaleReservationsReport()
+        job.logger = _CapturingLogger()
+        job.run(older_than_days=0)
+        report = "\n".join(job.logger.messages)
+        self.assertIn("INFRA2-9005", report)
+        self.assertNotIn("INFRA2-9006", report)
+        self.assertNotIn("INFRA2-9007", report)
 
     def test_low_stock_report_does_not_touch_zulip_by_default(self):
         """notify_zulip defaults to False -- running the report plainly must never post anywhere."""
@@ -202,7 +247,7 @@ class JobTestCase(TestCase):
         job = StaleReservationsReport()
         job.logger = _CapturingLogger()
         with patch("nautobot_spare_parts.zulip.send_message", return_value=True) as mock_send:
-            job.run(notify_zulip=True)
+            job.run(older_than_days=0, notify_zulip=True)
         mock_send.assert_called_once()
         self.assertIn("INFRA2-9002", mock_send.call_args[0][0])
 

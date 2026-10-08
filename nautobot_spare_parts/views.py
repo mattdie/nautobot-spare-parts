@@ -19,7 +19,7 @@ import logging
 from django.contrib import messages
 from django.core.exceptions import ValidationError
 from django.db import transaction as db_transaction
-from django.db.models import Count, DecimalField, ExpressionWrapper, F, Q, Sum, Value
+from django.db.models import Count, DecimalField, ExpressionWrapper, F, Sum, Value
 from django.db.models.functions import Coalesce, TruncMonth
 from django.utils import timezone
 from django.http import HttpResponse
@@ -41,7 +41,7 @@ from nautobot.dcim.models import Device
 from nautobot.dcim.tables import DeviceTypeTable
 from nautobot.core.views.paginator import EnhancedPaginator, get_paginate_count
 
-from nautobot_spare_parts import components, filters, forms, tables
+from nautobot_spare_parts import components, filters, forms, permissions, tables
 from nautobot_spare_parts.choices import SparePartCategoryChoices
 from nautobot_spare_parts.models import SparePartInventory, SparePartTransaction, SparePartType
 
@@ -419,6 +419,8 @@ class CheckOutView(InventoryActionView):
     def perform(self, request, inventory, data):
         """Record the check-out, and the device's own component if this fits one."""
         device = data.get("related_device")
+        if device is not None and not Device.objects.restrict(request.user, "view").filter(pk=device.pk).exists():
+            raise ValidationError(f"You do not have permission to view device {device}.")
         with db_transaction.atomic():
             inventory.check_out(
                 quantity=data["quantity"],
@@ -483,6 +485,7 @@ class DeallocationView(InventoryActionView):
             quantity=data["quantity"],
             reason=data["reason"],
             user=request.user,
+            jira_ticket=data.get("jira_ticket", ""),
             notes=data.get("notes", ""),
             request_id=data.get("request_id"),
         )
@@ -524,11 +527,12 @@ class TransferView(InventoryActionView):
 
     def perform(self, request, inventory, data):
         """Record both legs of the transfer."""
-        inventory.transfer_to(
+        permissions.transfer_as(
+            request.user,
+            inventory,
             destination_location=data["destination_location"],
             quantity=data["quantity"],
             reason=data["reason"],
-            user=request.user,
             notes=data.get("notes", ""),
             request_id=data.get("request_id"),
         )
@@ -580,8 +584,14 @@ class BulkReceiveView(ObjectPermissionRequiredMixin, GenericView):
                 for form in formset
                 if form.cleaned_data.get("inventory") and not form.cleaned_data.get("DELETE")
             ]
+            shipment_id = header_form.cleaned_data["request_id"]
+            keys = [forms.bulk_receive_line_key(shipment_id, line["inventory"]) for line in lines]
+            if SparePartTransaction.objects.filter(request_id__in=keys).exists():
+                # Lines go in all-or-nothing, so one key on record means all are.
+                messages.info(request, "This shipment was already received. Nothing was booked twice.")
+                return redirect(reverse("plugins:nautobot_spare_parts:sparepartinventory_list"))
             try:
-                received = self._receive(request, header_form.cleaned_data, lines)
+                received = self._receive(request, header_form.cleaned_data, zip(lines, keys))
             except ValidationError as exc:
                 for text in exc.messages:
                     messages.error(request, text)
@@ -606,14 +616,16 @@ class BulkReceiveView(ObjectPermissionRequiredMixin, GenericView):
         """Apply all lines inside one database transaction."""
         received = []
         with db_transaction.atomic():
-            for line in lines:
+            for line, request_id in lines:
                 inventory = line["inventory"]
+                permissions.require_change(request.user, inventory)
                 inventory.check_in(
                     quantity=line["quantity"],
                     reason=header["reason"],
                     user=request.user,
                     jira_ticket=header.get("jira_ticket", ""),
                     notes=header.get("notes", ""),
+                    request_id=request_id,
                 )
                 received.append(f"{line['quantity']}x {inventory.spare_part_type} at {inventory.location}")
         return received
@@ -647,9 +659,9 @@ class DeviceCheckOutView(ObjectPermissionRequiredMixin, GenericView):
                 "device": device,
                 "form": form,
                 "return_url": device.get_absolute_url(),
-                "previous_parts": SparePartTransaction.objects.filter(
-                    related_device=device, transaction_type="check_out"
-                ).select_related("spare_part_inventory__spare_part_type")[:5],
+                "previous_parts": SparePartTransaction.objects.restrict(request.user, "view")
+                .filter(related_device=device, transaction_type="check_out")
+                .select_related("spare_part_inventory__spare_part_type")[:5],
             },
         )
 
@@ -667,6 +679,7 @@ class DeviceCheckOutView(ObjectPermissionRequiredMixin, GenericView):
             data = form.cleaned_data
             inventory = data["inventory"]
             try:
+                permissions.require_change(request.user, inventory)
                 with db_transaction.atomic():
                     inventory.check_out(
                         quantity=data["quantity"],
@@ -864,13 +877,13 @@ class InventoryOverviewView(ObjectPermissionRequiredMixin, GenericView):
             request,
             self.template_name,
             {
-                "total_skus": SparePartType.objects.count(),
+                "total_skus": SparePartType.objects.restrict(request.user, "view").count(),
                 "total_units": totals["total_units"],
                 "total_reserved": totals["total_reserved"],
                 "total_value": total_value,
                 "low_stock_count": low_stock.count(),
                 "low_stock_items": low_stock.order_by("available")[:10],
-                "recent_transactions": SparePartTransaction.objects.select_related(
+                "recent_transactions": SparePartTransaction.objects.restrict(request.user, "view").select_related(
                     "spare_part_inventory__spare_part_type",
                     "spare_part_inventory__location",
                     "user",
@@ -1094,10 +1107,13 @@ class JiraTicketPartsView(ObjectPermissionRequiredMixin, GenericView):
                     .values_list("related_device__name", flat=True)
                     .distinct()
                 ],
-                # Net units still reserved against this ticket: allocations are
-                # positive, deallocations negative, so the sum is what is left.
-                "reserved_still_open": transactions.filter(
-                    Q(transaction_type="allocation") | Q(transaction_type="deallocation")
-                ).aggregate(net=Coalesce(Sum("reserved_delta"), Value(0)))["net"],
+                # Net units still reserved against this ticket. Every movement
+                # that touches the reserved pool counts: allocations add,
+                # deallocations and check-outs that fulfil a reservation take
+                # away. Floored at 0 for a check-out that consumed a reservation
+                # booked under a different ticket.
+                "reserved_still_open": max(
+                    transactions.aggregate(net=Coalesce(Sum("reserved_delta"), Value(0)))["net"], 0
+                ),
             },
         )

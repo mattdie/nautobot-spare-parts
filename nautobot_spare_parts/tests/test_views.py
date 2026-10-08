@@ -1,5 +1,7 @@
 """Tests for the UI: every page loads, and every action form behaves."""
 
+import uuid
+
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.test import Client
@@ -120,6 +122,28 @@ class PageLoadTestCase(ViewTestCaseBase):
     def test_jira_view_handles_an_unknown_ticket(self):
         response = self.client.get(self.url("jira_ticket_parts", "INFRA2-0000"))
         self.assertEqual(response.status_code, 200)
+
+    def test_jira_view_counts_a_fulfilled_reservation_as_closed(self):
+        self.inventory.allocate(quantity=3, reason="planned", jira_ticket="INFRA2-4321")
+        self.inventory.check_out(quantity=3, reason="fitted", fulfil_reservation=True, jira_ticket="INFRA2-4321")
+        response = self.client.get(self.url("jira_ticket_parts", "INFRA2-4321"))
+        self.assertEqual(response.context["reserved_still_open"], 0)
+
+    def test_jira_view_counts_a_ticketed_deallocation_as_closed(self):
+        self.inventory.allocate(quantity=3, reason="planned", jira_ticket="INFRA2-4321")
+        response = self.client.post(
+            self.url("sparepartinventory_deallocate", self.inventory.pk),
+            {"quantity": 3, "reason": "cancelled", "jira_ticket": "INFRA2-4321"},
+        )
+        self.assertEqual(response.status_code, 302)
+        response = self.client.get(self.url("jira_ticket_parts", "INFRA2-4321"))
+        self.assertEqual(response.context["reserved_still_open"], 0)
+
+    def test_jira_view_counts_an_open_reservation(self):
+        self.inventory.allocate(quantity=3, reason="planned", jira_ticket="INFRA2-4321")
+        self.inventory.check_out(quantity=1, reason="fitted", fulfil_reservation=True, jira_ticket="INFRA2-4321")
+        response = self.client.get(self.url("jira_ticket_parts", "INFRA2-4321"))
+        self.assertEqual(response.context["reserved_still_open"], 2)
 
 
 class ActionViewTestCase(ViewTestCaseBase):
@@ -422,6 +446,26 @@ class BulkReceiveTestCase(ViewTestCaseBase):
         self.second.refresh_from_db()
         self.assertEqual(self.inventory.quantity_on_hand, 15)
         self.assertEqual(self.second.quantity_on_hand, 5)
+
+    def test_resubmitting_the_same_shipment_books_nothing_twice(self):
+        payload = self.payload([(self.inventory, 5), (self.second, 3)], request_id=str(uuid.uuid4()))
+        first = self.client.post(self.url("sparepartinventory_bulk_receive"), payload)
+        second = self.client.post(self.url("sparepartinventory_bulk_receive"), payload)
+        self.assertEqual(first.status_code, 302)
+        self.assertEqual(second.status_code, 302)
+        self.inventory.refresh_from_db()
+        self.second.refresh_from_db()
+        self.assertEqual(self.inventory.quantity_on_hand, 15)
+        self.assertEqual(self.second.quantity_on_hand, 5)
+
+    def test_a_new_shipment_of_the_same_lines_is_received(self):
+        for _ in range(2):
+            self.client.post(
+                self.url("sparepartinventory_bulk_receive"),
+                self.payload([(self.inventory, 5)], request_id=str(uuid.uuid4())),
+            )
+        self.inventory.refresh_from_db()
+        self.assertEqual(self.inventory.quantity_on_hand, 20)
 
     def test_the_same_record_twice_is_rejected(self):
         response = self.client.post(
@@ -780,3 +824,120 @@ class PermissionTestCase(TestCase):
         response = Client().get(self.url("sparepartinventory_list"))
         self.assertEqual(response.status_code, 302)
         self.assertIn("/login/", response["Location"])
+
+
+class ConstrainedPermissionTestCase(TestCase):
+    """A user whose permissions are limited to one location stays inside it.
+
+    The action views look their record up through ``restrict()``, but the
+    records picked in a form (bulk receive lines, the device page's part
+    picker, a transfer's destination) have to be checked too.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.dcim = build_dcim()
+        cls.part_type = make_part_type()
+
+    def setUp(self):
+        super().setUp()
+        self.mine = make_inventory(self.part_type, self.dcim["location_a"], on_hand=10)
+        self.theirs = make_inventory(self.part_type, self.dcim["location_b"], on_hand=10)
+        self.theirs.check_in(quantity=1, reason="their history")
+
+        self.member = User.objects.create_user(username="site-a-tech", password="x")
+        view = ObjectPermission.objects.create(name="View DCIM and parts types", actions=["view"])
+        view.object_types.set(
+            ContentType.objects.filter(app_label="dcim", model__in=["device", "location", "devicetype"])
+            | ContentType.objects.filter(app_label="nautobot_spare_parts", model="spareparttype")
+        )
+        view.users.add(self.member)
+        site_a = ObjectPermission.objects.create(
+            name="Site A stock",
+            actions=["view", "change"],
+            constraints={"location": str(self.dcim["location_a"].pk)},
+        )
+        site_a.object_types.set(
+            ContentType.objects.filter(app_label="nautobot_spare_parts", model="sparepartinventory")
+        )
+        site_a.users.add(self.member)
+        site_a_history = ObjectPermission.objects.create(
+            name="Site A history",
+            actions=["view"],
+            constraints={"spare_part_inventory__location": str(self.dcim["location_a"].pk)},
+        )
+        site_a_history.object_types.set(
+            ContentType.objects.filter(app_label="nautobot_spare_parts", model="spareparttransaction")
+        )
+        site_a_history.users.add(self.member)
+
+        self.member_client = Client()
+        self.member_client.force_login(self.member)
+
+    def url(self, name, *args):
+        """Reverse a plugin URL."""
+        return reverse(f"plugins:nautobot_spare_parts:{name}", args=args)
+
+    def assert_unchanged(self):
+        self.mine.refresh_from_db()
+        self.theirs.refresh_from_db()
+        self.assertEqual(self.mine.quantity_on_hand, 10)
+        self.assertEqual(self.theirs.quantity_on_hand, 11)
+
+    def test_can_move_stock_at_own_location(self):
+        response = self.member_client.post(
+            self.url("sparepartinventory_checkin", self.mine.pk), {"quantity": 2, "reason": "delivery"}
+        )
+        self.assertEqual(response.status_code, 302)
+        self.mine.refresh_from_db()
+        self.assertEqual(self.mine.quantity_on_hand, 12)
+
+    def test_bulk_receive_refuses_another_locations_record(self):
+        response = self.member_client.post(
+            self.url("sparepartinventory_bulk_receive"),
+            {
+                "reason": "Shipment",
+                "form-TOTAL_FORMS": "2",
+                "form-INITIAL_FORMS": "0",
+                "form-MIN_NUM_FORMS": "0",
+                "form-MAX_NUM_FORMS": "1000",
+                "form-0-inventory": str(self.mine.pk),
+                "form-0-quantity": "1",
+                "form-1-inventory": str(self.theirs.pk),
+                "form-1-quantity": "5",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "do not have permission")
+        self.assert_unchanged()
+
+    def test_device_checkout_refuses_another_locations_record(self):
+        response = self.member_client.post(
+            reverse("plugins:nautobot_spare_parts:device_checkout", args=[self.dcim["device"].pk]),
+            {
+                "spare_part_type": str(self.part_type.pk),
+                "inventory": str(self.theirs.pk),
+                "quantity": 1,
+                "reason": "swap",
+                "component_slot": "DIMMA1",
+                "component_serial": "SN1",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assert_unchanged()
+
+    def test_transfer_refuses_a_destination_outside_the_constraint(self):
+        response = self.member_client.post(
+            self.url("sparepartinventory_transfer", self.mine.pk),
+            {"destination_location": str(self.dcim["location_b"].pk), "quantity": 3, "reason": "rebalance"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "do not have permission")
+        self.assert_unchanged()
+
+    def test_overview_hides_movements_the_user_cannot_see(self):
+        response = self.member_client.get(self.url("overview"))
+        self.assertEqual(response.status_code, 200)
+        shown = {txn.spare_part_inventory_id for txn in response.context["recent_transactions"]}
+        self.assertNotIn(self.theirs.pk, shown)
+        self.assertEqual(response.context["total_skus"], 1)

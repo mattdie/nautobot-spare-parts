@@ -17,7 +17,7 @@ movement as 400 with the reason -- never as a partially applied change.
 
 import logging
 
-from django.core.exceptions import ObjectDoesNotExist, PermissionDenied, ValidationError
+from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.db import transaction as db_transaction
 from drf_spectacular.utils import extend_schema
 from rest_framework import status
@@ -25,16 +25,28 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from nautobot.apps.api import NautobotModelViewSet, ReadOnlyModelViewSet
+from nautobot.core.api.authentication import TokenPermissions
 from nautobot.dcim.models import Device, Location
 
-from nautobot_spare_parts import components, filters
+from nautobot_spare_parts import components, filters, permissions
 from nautobot_spare_parts.api import serializers
 from nautobot_spare_parts.choices import SparePartCategoryChoices
 from nautobot_spare_parts.models import SparePartInventory, SparePartTransaction, SparePartType
 
 logger = logging.getLogger(__name__)
 
-CHANGE_PERMISSION = "nautobot_spare_parts.change_sparepartinventory"
+MOVEMENT_ACTIONS = {"check_in", "check_out", "adjust", "allocate", "deallocate", "transfer"}
+
+
+class StockMovementPermissions(TokenPermissions):
+    """A POST to a stock action changes an existing record; it does not add one.
+
+    Nautobot maps every POST to the ``add`` permission, which would demand
+    ``add_sparepartinventory`` from someone who only moves stock -- the UI asks
+    for ``change``, so the API has to as well.
+    """
+
+    perms_map = {**TokenPermissions.perms_map, "POST": ["%(app_label)s.change_%(model_name)s"]}
 
 
 class SparePartTypeViewSet(NautobotModelViewSet):
@@ -60,10 +72,12 @@ class SparePartInventoryViewSet(NautobotModelViewSet):
 
     # --- helpers -------------------------------------------------------------
 
-    def _require_change_permission(self):
-        """Reject callers who may read inventory but not move it."""
-        if not self.request.user.has_perm(CHANGE_PERMISSION):
-            raise PermissionDenied("You do not have permission to move spare part inventory.")
+    def restrict_queryset(self, request, *args, **kwargs):
+        """Look up the record for a stock action among the ones the user may change."""
+        if self.action in MOVEMENT_ACTIONS and request.user.is_authenticated:
+            self.queryset = self.queryset.restrict(request.user, "change")
+            return
+        super().restrict_queryset(request, *args, **kwargs)
 
     def _movement_response(self, inventory, txn, message):
         """Uniform success payload for every action."""
@@ -85,7 +99,6 @@ class SparePartInventoryViewSet(NautobotModelViewSet):
 
         ``apply(inventory, data)`` must return ``(transaction, message)``.
         """
-        self._require_change_permission()
         inventory = self.get_object()
         body = body_serializer_class(data=request.data)
         body.is_valid(raise_exception=True)
@@ -123,7 +136,7 @@ class SparePartInventoryViewSet(NautobotModelViewSet):
     # --- actions -------------------------------------------------------------
 
     @extend_schema(request=serializers.CheckInSerializer, responses={200: None})
-    @action(detail=True, methods=["post"], url_path="check-in")
+    @action(detail=True, methods=["post"], permission_classes=[StockMovementPermissions], url_path="check-in")
     def check_in(self, request, pk=None):
         """Add received stock."""
 
@@ -139,7 +152,7 @@ class SparePartInventoryViewSet(NautobotModelViewSet):
         return self._run(request, serializers.CheckInSerializer, apply)
 
     @extend_schema(request=serializers.CheckOutSerializer, responses={200: None})
-    @action(detail=True, methods=["post"], url_path="check-out")
+    @action(detail=True, methods=["post"], permission_classes=[StockMovementPermissions], url_path="check-out")
     def check_out(self, request, pk=None):
         """Remove stock that is being used."""
 
@@ -172,15 +185,13 @@ class SparePartInventoryViewSet(NautobotModelViewSet):
                     **self._common(data),
                 )
                 if device is not None and slot:
-                    components.sync_device_component(
-                        device=device, spare_part_type=part_type, slot=slot, serial=serial
-                    )
+                    components.sync_device_component(device=device, spare_part_type=part_type, slot=slot, serial=serial)
             return txn, f"Checked out {data['quantity']} unit(s); {inventory.quantity_available} still available."
 
         return self._run(request, serializers.CheckOutSerializer, apply)
 
     @extend_schema(request=serializers.AdjustmentSerializer, responses={200: None})
-    @action(detail=True, methods=["post"], url_path="adjust")
+    @action(detail=True, methods=["post"], permission_classes=[StockMovementPermissions], url_path="adjust")
     def adjust(self, request, pk=None):
         """Correct the count after a stock take."""
 
@@ -191,7 +202,7 @@ class SparePartInventoryViewSet(NautobotModelViewSet):
         return self._run(request, serializers.AdjustmentSerializer, apply)
 
     @extend_schema(request=serializers.AllocationSerializer, responses={200: None})
-    @action(detail=True, methods=["post"], url_path="allocate")
+    @action(detail=True, methods=["post"], permission_classes=[StockMovementPermissions], url_path="allocate")
     def allocate(self, request, pk=None):
         """Reserve available stock."""
 
@@ -207,18 +218,23 @@ class SparePartInventoryViewSet(NautobotModelViewSet):
         return self._run(request, serializers.AllocationSerializer, apply)
 
     @extend_schema(request=serializers.DeallocationSerializer, responses={200: None})
-    @action(detail=True, methods=["post"], url_path="deallocate")
+    @action(detail=True, methods=["post"], permission_classes=[StockMovementPermissions], url_path="deallocate")
     def deallocate(self, request, pk=None):
         """Release a reservation."""
 
         def apply(inventory, data):
-            txn = inventory.deallocate(quantity=data["quantity"], user=request.user, **self._common(data))
+            txn = inventory.deallocate(
+                quantity=data["quantity"],
+                user=request.user,
+                jira_ticket=data.get("jira_ticket", ""),
+                **self._common(data),
+            )
             return txn, f"Released {data['quantity']} unit(s); {inventory.quantity_reserved} still reserved."
 
         return self._run(request, serializers.DeallocationSerializer, apply)
 
     @extend_schema(request=serializers.TransferSerializer, responses={200: None})
-    @action(detail=True, methods=["post"], url_path="transfer")
+    @action(detail=True, methods=["post"], permission_classes=[StockMovementPermissions], url_path="transfer")
     def transfer(self, request, pk=None):
         """Move stock to another location."""
 
@@ -227,10 +243,11 @@ class SparePartInventoryViewSet(NautobotModelViewSet):
                 destination = Location.objects.restrict(request.user, "view").get(pk=data["destination_location"])
             except Location.DoesNotExist:
                 raise ObjectDoesNotExist(f"No location with id {data['destination_location']}.")
-            out_txn, _in_txn = inventory.transfer_to(
+            out_txn, _in_txn = permissions.transfer_as(
+                request.user,
+                inventory,
                 destination_location=destination,
                 quantity=data["quantity"],
-                user=request.user,
                 **self._common(data),
             )
             return out_txn, f"Transferred {data['quantity']} unit(s) to {destination}."

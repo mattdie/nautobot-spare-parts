@@ -367,3 +367,69 @@ class APIPermissionTestCase(SparePartAPITestCase):
 
         self.inventory.refresh_from_db()
         self.assertEqual(self.inventory.quantity_on_hand, 10)
+
+
+class APIChangePermissionTestCase(SparePartAPITestCase):
+    """Moving stock needs ``change``, not ``add`` -- the same as the UI."""
+
+    def setUp(self):
+        super().setUp()
+        self.user.is_superuser = False
+        self.user.save()
+        view = ObjectPermission.objects.create(name="View parts and locations", actions=["view"])
+        view.object_types.set(
+            ContentType.objects.filter(
+                app_label="nautobot_spare_parts", model__in=["spareparttransaction", "spareparttype"]
+            )
+            | ContentType.objects.filter(app_label="dcim", model="location")
+        )
+        view.users.add(self.user)
+        site_a = ObjectPermission.objects.create(
+            name="Site A stock",
+            actions=["view", "change"],
+            constraints={"location": str(self.dcim["location_a"].pk)},
+        )
+        site_a.object_types.set(
+            ContentType.objects.filter(app_label="nautobot_spare_parts", model="sparepartinventory")
+        )
+        site_a.users.add(self.user)
+
+    def test_change_without_add_can_move_stock(self):
+        response = self.client.post(
+            self.action_url("check-in"), {"quantity": 2, "reason": "delivery"}, format="json", **self.header
+        )
+        self.assertHttpStatus(response, 200)
+        self.inventory.refresh_from_db()
+        self.assertEqual(self.inventory.quantity_on_hand, 12)
+
+    def test_a_record_outside_the_constraint_is_not_found(self):
+        other = make_inventory(self.part_type, self.dcim["location_b"], on_hand=5)
+        response = self.client.post(
+            self.action_url("check-in", pk=other.pk),
+            {"quantity": 2, "reason": "delivery"},
+            format="json",
+            **self.header,
+        )
+        self.assertHttpStatus(response, 404)
+        other.refresh_from_db()
+        self.assertEqual(other.quantity_on_hand, 5)
+
+    def test_transfer_to_a_location_outside_the_constraint_is_refused(self):
+        response = self.client.post(
+            self.action_url("transfer"),
+            {"destination_location": str(self.dcim["location_b"].pk), "quantity": 3, "reason": "rebalance"},
+            format="json",
+            **self.header,
+        )
+        self.assertHttpStatus(response, 400)
+        self.inventory.refresh_from_db()
+        self.assertEqual(self.inventory.quantity_on_hand, 10)
+        self.assertFalse(SparePartInventory.objects.filter(location=self.dcim["location_b"]).exists())
+
+    def test_a_read_only_token_still_cannot_move_stock(self):
+        self.token.write_enabled = False
+        self.token.save()
+        response = self.client.post(
+            self.action_url("check-in"), {"quantity": 2, "reason": "delivery"}, format="json", **self.header
+        )
+        self.assertHttpStatus(response, 403)

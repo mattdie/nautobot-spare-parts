@@ -212,6 +212,13 @@ class AllocationSerializer(MovementSerializer):
 class DeallocationSerializer(MovementSerializer):
     """Body for the deallocate action."""
 
+    jira_ticket = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        validators=[JIRA_TICKET_VALIDATOR],
+        help_text="Jira ticket the stock was reserved for, so it stops counting as still reserved there",
+    )
+
 
 class TransferSerializer(MovementSerializer):
     """Body for the transfer action."""

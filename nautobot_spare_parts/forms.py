@@ -628,6 +628,12 @@ class DeallocationForm(MovementForm):
         widget=forms.Textarea(attrs={"rows": 3}),
         help_text="Why is the reservation no longer needed? e.g. 'Maintenance window cancelled'",
     )
+    jira_ticket = forms.CharField(
+        max_length=50,
+        required=False,
+        validators=[JIRA_TICKET_VALIDATOR],
+        help_text="The ticket the stock was reserved for, so that ticket stops showing it as still reserved.",
+    )
     notes = forms.CharField(widget=forms.Textarea(attrs={"rows": 3}), required=False)
 
     def __init__(self, *args, inventory=None, **kwargs):
@@ -804,13 +810,13 @@ class BulkReceiveBaseFormSet(forms.BaseFormSet):
             raise forms.ValidationError("Nothing to receive -- fill in at least one line.")
 
 
-class BulkReceiveHeaderForm(forms.Form):
+class BulkReceiveHeaderForm(MovementForm):
     """Shipment-level fields shared by every line of a bulk receive.
 
-    No idempotency key here: the submit button disables itself, and a
-    re-submitted shipment is caught by the duplicate-line check rather than by
-    a per-line key derived from a shipment key, which was more machinery than
-    the problem deserved.
+    ``request_id`` identifies the shipment; each line's own key is derived
+    from it (see :func:`bulk_receive_line_key`), so re-posting the page -- a
+    retry after a timeout, browser back and resubmit -- books nothing twice.
+    The duplicate-line check only catches a repeat within one submission.
     """
 
     reason = forms.CharField(
@@ -825,6 +831,11 @@ class BulkReceiveHeaderForm(forms.Form):
         help_text="Jira ticket reference (e.g. INFRA2-1234)",
     )
     notes = forms.CharField(widget=forms.Textarea(attrs={"rows": 2}), required=False)
+
+
+def bulk_receive_line_key(shipment_id, inventory):
+    """Idempotency key for one line: stable for the same shipment and record."""
+    return uuid.uuid5(shipment_id, str(inventory.pk))
 
 
 BulkReceiveFormSet = forms.formset_factory(
